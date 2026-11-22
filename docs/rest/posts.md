@@ -14,7 +14,8 @@
   "p": "post content",
   "attachments": [{"id": "fileid24…", "mime": "image/webp", "size": 1234, "filename": "x.png", "width": 10, "height": 10, "thumbnail_mime": "image/webp", "thumbnail_size": 500}],
   "reply_to": [ …embedded parent post objects… ],
-  "reactions": [{"emoji": "👍", "count": 3, "user_reacted": false}],
+  "reactions": [{"emoji": "👍", "count": 3, "user_reacted": false,
+                 "users": ["alice", "bob", "carol"]}],
   "emojis": [{"_id": "fileid24…", "name": "party", "animated": false}],
   "stickers": [{"_id": "fileid24…", "name": "meowy", "animated": false}],
   "pinned": false,
@@ -129,6 +130,9 @@ broadcast to everyone but never stored.
 
 `200` — created post. Emits `post` to chat members (everyone for
 `livechat`), `update_chat` when a DM request changes.
+
+`reactions[].users` is up to 3 usernames who reacted with that emoji, most
+recent first (the requester is always first if they reacted).
 
 ## `GET /posts/<post_id>/reactions/<emoji>?page=n`
 
