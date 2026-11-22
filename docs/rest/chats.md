@@ -22,6 +22,8 @@ invites). Roles & permissions are covered in
   "roles": [ …role objects… ],
   "member_roles": {"user": ["default", "administrator"]},
   "invites_enabled": true,
+  "allow_sharing": true,
+  "share_context": true,
   "bans": [{"username": "…", "banned_by": "…", "banned_at": 0, "expires": null}],
   "emojis": [{"_id": "file-id", "name": "…", "animated": false}],
   "stickers": [{…}],
@@ -30,12 +32,15 @@ invites). Roles & permissions are covered in
 ```
 
 - `type`: `0` group chat · `1` DM.
+- `allow_sharing`/`share_context` (groups only, default `true`): whether
+  non-members may read this chat's posts via `GET /posts?id=` and
+  `/posts/<id>/context` (context additionally requires `share_context`).
 - `dm_request` (DMs only) appears when a request is pending:
   `{from, to, first_message_sent}` — `ignored`/`created` are never exposed.
 - `block_notice` (DMs only) is the username of the member who blocked the
   other with `notify: true`.
-- Role object: `{_id, name, tier, permissions: {perm: bool}, preset: bool,
-colors?: string[]}`.
+- Role object: `{_id, name, tier (−1–4; −1 = cosmetic), permissions: {perm: bool},
+display_override?: bool, preset: bool, colors?: string[]}`.
 
 ## `GET /chats/`
 
@@ -76,6 +81,11 @@ permitted or nothing applies):
 | `icon_color` | `change_color` |
 | `announce_deletes`, `announce_deleter` | `change_settings` |
 | `invites_enabled` | `toggle_invites` |
+| `allow_sharing`, `share_context` | `change_settings` |
+
+`share_context` can only be `true` while `allow_sharing` is `true`:
+turning `allow_sharing` off forces `share_context` off; setting
+`share_context: true` while sharing is off → `400 sharingDisabled`.
 
 DMs: only the owner may patch. `EDITING_CHAT_DETAILS` restriction → 403.
 Emits `update_chat` and `Server` announcement posts. `200` — chat object.
@@ -169,16 +179,23 @@ Pinned posts in the chat (any member).
 
 Group chats only. Rules in [chat-permissions](../chat-permissions.md#role-api).
 
-- `POST /chats/<chat_id>/roles` — body `{name: 1–32, tier: 0–3,
-permissions: {perm: bool}, colors?: string[0–2] (6-hex)}`. Needs
-`create_roles`; non-owner/admin actors need `tier < rank(actor)`; each
-`true` perm needs `PERMISSIONS[perm] ≤ tier` and grant rights. Errors: 400
-`unknownPermission` / `permissionAboveRoleTier` / `badColors`, 403
-`missingPermission` / `insufficientRank`. `200` — role object.
-- `PATCH /chats/<chat_id>/roles/<role_id>` — `{name?, permissions?: {perm:
-true|false|null}, colors?}` (`null` = reset to inherit; `tier` is immutable →
-  400). `modify_roles` + `can_manage_role`; the `administrator` role only
-  accepts a `colors` change from the owner.
+- `POST /chats/<chat_id>/roles` — body `{name: 1–32, tier: −1–3,
+permissions: {perm: bool}, display_override?: bool, colors?: string[0–2]
+(6-hex)}`. Needs `create_roles`; non-owner/admin actors need `tier < rank(actor)`;
+each `true` perm needs `PERMISSIONS[perm] ≤ tier` and grant rights. Tier −1
+(cosmetic) roles store `permissions: {}` regardless of what you send, and
+are the only roles that may have `display_override` (else 400
+`notCosmetic`). Errors: 400 `unknownPermission` / `permissionAboveRoleTier`
+/ `badColors` / `notCosmetic`, 403 `missingPermission` / `insufficientRank`.
+`200` — role object.
+- `PATCH /chats/<chat_id>/roles/<role_id>` — `{name?, tier?, permissions?:
+{perm: true|false|null}, display_override?, colors?}` (`null` = reset to
+inherit). `modify_roles` + `can_manage_role`; the `administrator` role only
+  accepts a `colors` change from the owner, and its tier is locked (400
+  `tierLocked`). Tier changes need `new_tier < rank(actor)` for non-owners;
+  see [tier changes](../chat-permissions.md#changing-a-roles-tier) for the
+  permission/override resets. `display_override` requires tier −1 (400
+  `notCosmetic`).
 - `DELETE /chats/<chat_id>/roles/<role_id>` — `delete_roles` +
   `can_manage_role`; `default`/`administrator` can't be deleted (403).
 - `PUT /chats/<chat_id>/members/<u>/roles/<role_id>` /

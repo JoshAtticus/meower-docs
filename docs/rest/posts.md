@@ -41,18 +41,23 @@ A chat emoji is embedded in content as `<:FILE_ID>`, e.g.
 ## `GET /posts/?id=<post_id>`
 
 Single post. 404 if it doesn't exist, is deleted, or you can't see its origin
-(inbox posts that aren't yours, chats you aren't in).
+(inbox posts that aren't yours, chats you aren't in). For **group chats**,
+non-members (and anonymous callers) can still read the post when the chat's
+`allow_sharing` is on — banned users count as non-members.
 
 ## `GET /posts/<post_id>/context?limit=n`
 
 The post plus up to `limit` (1–10, default 5) surrounding posts in the same
-origin: `{post, before, after}`.
+origin: `{post, before, after}`. For group chats, non-members additionally
+need `share_context` on (implies `allow_sharing`), else 404 even though the
+post itself is readable.
 
 ## `PATCH /posts/?id=<post_id>`
 
 Edit **your own** post (body: `PostBody`, only `content` is applied; must be
-non-empty). Restricted users (`HOME_POSTS`/`CHAT_POSTS` per origin) → 403
-`accountBanned`. Editing the first message of a pending DM request → 403
+non-empty). In group chats the author needs the `edit_messages` permission
+(403 `missingPermission`). Restricted users (`HOME_POSTS`/`CHAT_POSTS` per
+origin) → 403 `accountBanned`. Editing the first message of a pending DM request → 403
 `dmRequestPending`. Creates a revision entry, sets `edited_at`, emits
 `update_post`.
 
@@ -116,7 +121,10 @@ Users who reacted with `<emoji>` (unicode emoji or chat-emoji file id).
 
 React. `<emoji>` must be exactly one unicode emoji or an existing chat-emoji
 file id. Max 50 distinct reactions per post → 403 `tooManyReactions`. Group
-chats need `add_reactions` → 403 `missingPermission`. Ratelimit 5/5s.
+chats need `react` when joining a reaction already on the post, or
+`add_reactions` when the emoji isn't on the post yet → 403
+`missingPermission`. Removing your own reaction is always allowed.
+Ratelimit 5/5s.
 
 `200 {"error": false}` + `post_reaction_add` event
 `{chat_id, post_id, emoji, username}`.

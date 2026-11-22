@@ -639,18 +639,23 @@ A chat emoji is embedded in content as `<:FILE_ID>`, e.g.
 ## `GET /posts/?id=<post_id>`
 
 Single post. 404 if it doesn't exist, is deleted, or you can't see its origin
-(inbox posts that aren't yours, chats you aren't in).
+(inbox posts that aren't yours, chats you aren't in). For **group chats**,
+non-members (and anonymous callers) can still read the post when the chat's
+`allow_sharing` is on — banned users count as non-members.
 
 ## `GET /posts/<post_id>/context?limit=n`
 
 The post plus up to `limit` (1–10, default 5) surrounding posts in the same
-origin: `{post, before, after}`.
+origin: `{post, before, after}`. For group chats, non-members additionally
+need `share_context` on (implies `allow_sharing`), else 404 even though the
+post itself is readable.
 
 ## `PATCH /posts/?id=<post_id>`
 
 Edit **your own** post (body: `PostBody`, only `content` is applied; must be
-non-empty). Restricted users (`HOME_POSTS`/`CHAT_POSTS` per origin) → 403
-`accountBanned`. Editing the first message of a pending DM request → 403
+non-empty). In group chats the author needs the `edit_messages` permission
+(403 `missingPermission`). Restricted users (`HOME_POSTS`/`CHAT_POSTS` per
+origin) → 403 `accountBanned`. Editing the first message of a pending DM request → 403
 `dmRequestPending`. Creates a revision entry, sets `edited_at`, emits
 `update_post`.
 
@@ -714,7 +719,10 @@ Users who reacted with `<emoji>` (unicode emoji or chat-emoji file id).
 
 React. `<emoji>` must be exactly one unicode emoji or an existing chat-emoji
 file id. Max 50 distinct reactions per post → 403 `tooManyReactions`. Group
-chats need `add_reactions` → 403 `missingPermission`. Ratelimit 5/5s.
+chats need `react` when joining a reaction already on the post, or
+`add_reactions` when the emoji isn't on the post yet → 403
+`missingPermission`. Removing your own reaction is always allowed.
+Ratelimit 5/5s.
 
 `200 {"error": false}` + `post_reaction_add` event
 `{chat_id, post_id, emoji, username}`.
@@ -832,6 +840,8 @@ invites). Roles & permissions are covered in
   "roles": [ …role objects… ],
   "member_roles": {"user": ["default", "administrator"]},
   "invites_enabled": true,
+  "allow_sharing": true,
+  "share_context": true,
   "bans": [{"username": "…", "banned_by": "…", "banned_at": 0, "expires": null}],
   "emojis": [{"_id": "file-id", "name": "…", "animated": false}],
   "stickers": [{…}],
@@ -840,12 +850,15 @@ invites). Roles & permissions are covered in
 ```
 
 - `type`: `0` group chat · `1` DM.
+- `allow_sharing`/`share_context` (groups only, default `true`): whether
+  non-members may read this chat's posts via `GET /posts?id=` and
+  `/posts/<id>/context` (context additionally requires `share_context`).
 - `dm_request` (DMs only) appears when a request is pending:
   `{from, to, first_message_sent}` — `ignored`/`created` are never exposed.
 - `block_notice` (DMs only) is the username of the member who blocked the
   other with `notify: true`.
-- Role object: `{_id, name, tier, permissions: {perm: bool}, preset: bool,
-colors?: string[]}`.
+- Role object: `{_id, name, tier (−1–4; −1 = cosmetic), permissions: {perm: bool},
+display_override?: bool, preset: bool, colors?: string[]}`.
 
 ## `GET /chats/`
 
@@ -886,6 +899,11 @@ permitted or nothing applies):
 | `icon_color` | `change_color` |
 | `announce_deletes`, `announce_deleter` | `change_settings` |
 | `invites_enabled` | `toggle_invites` |
+| `allow_sharing`, `share_context` | `change_settings` |
+
+`share_context` can only be `true` while `allow_sharing` is `true`:
+turning `allow_sharing` off forces `share_context` off; setting
+`share_context: true` while sharing is off → `400 sharingDisabled`.
 
 DMs: only the owner may patch. `EDITING_CHAT_DETAILS` restriction → 403.
 Emits `update_chat` and `Server` announcement posts. `200` — chat object.
@@ -979,16 +997,23 @@ Pinned posts in the chat (any member).
 
 Group chats only. Rules in [chat-permissions](../chat-permissions.md#role-api).
 
-- `POST /chats/<chat_id>/roles` — body `{name: 1–32, tier: 0–3,
-permissions: {perm: bool}, colors?: string[0–2] (6-hex)}`. Needs
-`create_roles`; non-owner/admin actors need `tier < rank(actor)`; each
-`true` perm needs `PERMISSIONS[perm] ≤ tier` and grant rights. Errors: 400
-`unknownPermission` / `permissionAboveRoleTier` / `badColors`, 403
-`missingPermission` / `insufficientRank`. `200` — role object.
-- `PATCH /chats/<chat_id>/roles/<role_id>` — `{name?, permissions?: {perm:
-true|false|null}, colors?}` (`null` = reset to inherit; `tier` is immutable →
-  400). `modify_roles` + `can_manage_role`; the `administrator` role only
-  accepts a `colors` change from the owner.
+- `POST /chats/<chat_id>/roles` — body `{name: 1–32, tier: −1–3,
+permissions: {perm: bool}, display_override?: bool, colors?: string[0–2]
+(6-hex)}`. Needs `create_roles`; non-owner/admin actors need `tier < rank(actor)`;
+each `true` perm needs `PERMISSIONS[perm] ≤ tier` and grant rights. Tier −1
+(cosmetic) roles store `permissions: {}` regardless of what you send, and
+are the only roles that may have `display_override` (else 400
+`notCosmetic`). Errors: 400 `unknownPermission` / `permissionAboveRoleTier`
+/ `badColors` / `notCosmetic`, 403 `missingPermission` / `insufficientRank`.
+`200` — role object.
+- `PATCH /chats/<chat_id>/roles/<role_id>` — `{name?, tier?, permissions?:
+{perm: true|false|null}, display_override?, colors?}` (`null` = reset to
+inherit). `modify_roles` + `can_manage_role`; the `administrator` role only
+  accepts a `colors` change from the owner, and its tier is locked (400
+  `tierLocked`). Tier changes need `new_tier < rank(actor)` for non-owners;
+  see [tier changes](../chat-permissions.md#changing-a-roles-tier) for the
+  permission/override resets. `display_override` requires tier −1 (400
+  `notCosmetic`).
 - `DELETE /chats/<chat_id>/roles/<role_id>` — `delete_roles` +
   `can_manage_role`; `default`/`administrator` can't be deleted (403).
 - `PUT /chats/<chat_id>/members/<u>/roles/<role_id>` /
@@ -1433,6 +1458,9 @@ Group chats carry three extra fields:
 - `roles` — list of role objects (see below).
 - `member_roles` — `{username: [role_id, …]}`.
 - `invites_enabled` — bool (default `true`).
+- `allow_sharing` — bool (default `true`): non-members may read shared posts.
+- `share_context` — bool (default `true`, forced off while `allow_sharing`
+  is off): non-members may also read surrounding context.
 
 ## Role object
 
@@ -1443,7 +1471,8 @@ Group chats carry three extra fields:
 ```
 
 - `_id` — preset roles have stable ids; custom roles use UUIDs.
-- `tier` — integer 0–4 (see [tiers](#tiers)); immutable after creation.
+- `tier` — integer −1–4 (see [tiers](#tiers)); changeable via PATCH except
+  for `administrator`.
 - `permissions` — `{perm_key: bool}`. `true` = Allow, `false` = Deny,
   key absent = Inherit.
 - `colors` — up to 2 six-hex strings (none / solid / gradient); cosmetic.
@@ -1453,14 +1482,15 @@ Group chats carry three extra fields:
 
 | Key | Tier |
 |---|---|
-| `send_messages`, `delete_own_messages`, `invite_members`, `add_emotes`, `edit_emotes`, `delete_emotes`, `change_color`, `change_name`, `change_icon`, `delete_icon`, `pin_messages`, `unpin_messages`, `add_reactions` | 0 |
+| `send_messages`, `delete_own_messages`, `invite_members`, `add_emotes`, `edit_emotes`, `delete_emotes`, `change_color`, `change_name`, `change_icon`, `delete_icon`, `pin_messages`, `unpin_messages`, `add_reactions`, `share_posts`, `react`, `edit_messages` | 0 |
 | `delete_others_messages`, `remove_members` | 1 |
 | `ban_members`, `modify_roles`, `assign_roles` | 2 |
 | `change_settings`, `create_roles`, `delete_roles`, `toggle_invites` | 3 |
 
 ## Tiers
 
-- Role tiers are 0–3 for creatable roles; **4 = Administrator** (all
+- Role tiers are −1–3 for creatable roles (**−1 = Cosmetic**: grants no
+  permissions and is excluded from inheritance); **4 = Administrator** (all
   permissions, preset only); **owner rank = 5**.
 - A permission can only be set to `true` on a role whose tier ≥ the
   permission's required tier.
@@ -1475,19 +1505,45 @@ Group chats carry three extra fields:
 `role_effective(role)`:
 
 1. Tier ≥ 4 → **all** permissions.
-2. Start with every permission any **lower-tier** role explicitly allows.
-3. Add this role's own `true`s.
-4. Remove this role's own `false`s.
+2. Tier −1 (cosmetic) → **no** permissions, ever.
+3. Start with every permission any **lower-tier, non-cosmetic** role
+   explicitly allows.
+4. Add this role's own `true`s.
+5. Remove this role's own `false`s.
 
 Denies do **not** cascade upward: a `false` on a lower-tier role only
 affects that role. `member_permissions(user)` = owner → all; non-member →
 none; else union over their roles.
 
+### Cosmetic roles & `display_override`
+
+- A `tier: -1` role is cosmetic: `permissions` is always `{}` (permission
+  edits are stripped server-side) and it contributes nothing to inheritance.
+- Roles carry `display_override` (bool, default `false`), allowed **only**
+  on cosmetic roles (setting it `true` on any other tier → 400
+  `notCosmetic`; moving a role off tier −1 resets it to `false`).
+- The role shown for a member (name + colour): if the member has any role
+  with `display_override`, the **most recently assigned** of those wins;
+  otherwise the highest-tier role (ties → most recent).
+
+### Changing a role's tier
+
+`PATCH /chats/<id>/roles/<rid>` accepts `tier` in −1..4:
+
+- `administrator`'s tier can never change → 400 `tierLocked`.
+- The actor must manage the role at its current tier **and** the new tier:
+  the owner may set any tier, anyone else needs `new_tier < rank(actor)`
+  (else 403 `missingPermission`).
+- Effects: → −1 strips `permissions`; leaving −1 strips `permissions` and
+  resets `display_override`; lowering a numeric tier drops explicit `true`
+  allows for perms whose required tier is above the new tier (explicit
+  `false` denies are kept).
+
 ## Preset roles
 
 | id | Name | Tier | Grants |
 |---|---|---|---|
-| `default` | Default | 0 | send_messages, delete_own_messages, invite_members, add_reactions |
+| `default` | Default | 0 | send_messages, delete_own_messages, invite_members, add_reactions, share_posts, react, edit_messages |
 | `stickerer` | Stickerer | 0 | add_emotes, edit_emotes, delete_emotes |
 | `customiser` | Customiser | 0 | change_color, change_name, change_icon, delete_icon |
 | `pinner` | Pinner | 0 | pin_messages, unpin_messages |
@@ -1523,8 +1579,8 @@ role and `invites_enabled`:
 |---|---|
 | `friends` | default gains all stickerer + customiser + pinner permissions |
 | `public` | presets unchanged |
-| `private` | `invites_enabled: false` |
-| `announcements`, `emojis` | default reduced to `add_reactions` only |
+| `private` | `invites_enabled: false`, `allow_sharing`/`share_context` false, default reduced to send_messages + delete_own_messages + invite_members (no react/share/edit perms) |
+| `announcements`, `emojis` | default reduced to `add_reactions` + `react` + `share_posts` + `edit_messages` |
 | `other` / omitted | presets unchanged |
 
 ## Legacy migration
