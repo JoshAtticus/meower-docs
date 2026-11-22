@@ -23,7 +23,7 @@ invites). Roles & permissions are covered in
   "member_roles": {"user": ["default", "administrator"]},
   "invites_enabled": true,
   "allow_sharing": true,
-  "share_context": true,
+  "share_context": false,
   "bans": [{"username": "…", "banned_by": "…", "banned_at": 0, "expires": null}],
   "emojis": [{"_id": "file-id", "name": "…", "animated": false}],
   "stickers": [{…}],
@@ -32,7 +32,7 @@ invites). Roles & permissions are covered in
 ```
 
 - `type`: `0` group chat · `1` DM.
-- `allow_sharing`/`share_context` (groups only, default `true`): whether
+- `allow_sharing`/`share_context` (groups only; `allow_sharing` defaults to `true`, `share_context` to `false` except in Announcements chats): whether
   non-members may read this chat's posts via `GET /posts?id=` and
   `/posts/<id>/context` (context additionally requires `share_context`).
 - `dm_request` (DMs only) appears when a request is pending:

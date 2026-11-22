@@ -12,7 +12,7 @@ Group chats carry three extra fields:
 - `member_roles` — `{username: [role_id, …]}`.
 - `invites_enabled` — bool (default `true`).
 - `allow_sharing` — bool (default `true`): non-members may read shared posts.
-- `share_context` — bool (default `true`, forced off while `allow_sharing`
+- `share_context` — bool (default `false`, `true` for Announcements chats; forced off while `allow_sharing`
   is off): non-members may also read surrounding context.
 
 ## Role object
