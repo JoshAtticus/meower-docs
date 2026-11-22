@@ -66,7 +66,9 @@ ws.onopen = () => ws.send(JSON.stringify({
 ws.onmessage = async (ev) => {
   const { cmd, val } = JSON.parse(ev.data);
   if (cmd === "post" && val.p === "!ping") {
-    await fetch(`${API}/posts/${val.post_origin}`, {
+    // home posts go to POST /home, chat posts to POST /posts/<chat id>
+    const path = val.post_origin === "home" ? "/home" : `/posts/${val.post_origin}`;
+    await fetch(`${API}${path}`, {
       method: "POST",
       headers: { "Token": TOKEN, "Content-Type": "application/json" },
       body: JSON.stringify({ content: "pong" }),
@@ -93,8 +95,10 @@ async def main():
         async for raw in ws:
             pkt = json.loads(raw)
             if pkt["cmd"] == "post" and pkt["val"]["p"] == "!ping":
+                origin = pkt["val"]["post_origin"]
+                path = "/home" if origin == "home" else f"/posts/{origin}"
                 requests.post(
-                    f"{API}/posts/{pkt['val']['post_origin']}",
+                    f"{API}{path}",
                     headers={"Token": TOKEN}, json={"content": "pong"})
 
 asyncio.run(main())

@@ -9,8 +9,8 @@ CloudLink `authpswd` packet (username + password **or token**; bots use
 tokens only). Responses always carry `"error": true|false`; failures add a
 `"type"` string (`missingPermission`, `usernameExists`, `mfaRequired`, …).
 Pagination is `page`/`pages`/`autoget`/`page#`, 25 items per page, and
-ratelimits return 429 with `Retry-After`. Custom chat emojis are written
-inline as `<:<file-id>`; bot accounts have `bot: true` + `bot_owner` on
+ratelimits return 429 with `{"error": true, "type": "tooManyRequests"}`. Custom chat emojis are written
+inline as `<:FILE_ID>`; bot accounts have `bot: true` + `bot_owner` on
 their profile. Group-chat roles give per-permission Allow/Deny/Inherit
 across tiers 0–4 (owner rank 5).
 

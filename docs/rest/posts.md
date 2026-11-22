@@ -34,7 +34,7 @@
 
 ### Custom emoji in content
 
-A chat emoji is embedded in content as `<:<file-id>`, e.g.
+A chat emoji is embedded in content as `<:FILE_ID>`, e.g.
 `<:aB3fG7hJkLmN0pQrStUvWx>`. Render it from the uploads service:
 `GET {uploads}/emojis/<file-id>`.
 
