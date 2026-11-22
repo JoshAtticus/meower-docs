@@ -25,7 +25,7 @@ Create a post on home. Auth required; `POST_RATELIMIT_BYPASS` accounts skip the
 |---|---|---|---|
 | `content` | string | no | ≤4000 |
 | `nonce` | string | no | ≤64, echoed back in the `post` event |
-| `attachments` | string[] | no | file ids, ≤10 |
+| `attachments` | string[] | no | file ids, ≤10, **images and videos only** |
 | `reply_to` | string[] | no | post ids in `home`, ≤10 |
 | `stickers` | string[] | no | sticker ids, ≤10 (unknown ids dropped) |
 
@@ -34,8 +34,9 @@ accounts (`HOME_POSTS`) get `403 accountBanned`.
 
 `200` — the created post object (with `"error": false`).
 
-Errors: 400 `tooManyAttachments` / `tooManyReplies` / `tooManyStickers`, 500
-`unableToClaimAttachment`, 401, 403, 429.
+Errors: 400 `tooManyAttachments` / `tooManyReplies` / `tooManyStickers`, 400
+`mediaOnly` when an attachment's file record isn't an image or video (SVG excluded),
+500 `unableToClaimAttachment`, 401, 403, 429.
 
 ## `POST /home/typing`
 

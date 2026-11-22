@@ -117,7 +117,8 @@ Posts in a chat you belong to (group or DM), newest first. Auth + membership.
 ## `POST /posts/<chat_id>`
 
 Post in a chat. Body = `PostBody` (same fields/constraints as
-[home](home.md#post-home)). Chat id `livechat` is special: the post is
+[home](home.md#post-home)) — attachments must be images or videos or the request fails
+with 400 `mediaOnly`. Chat id `livechat` is special: the post is
 broadcast to everyone but never stored.
 
 - Group chat → needs `send_messages` permission (403 `missingPermission`).
