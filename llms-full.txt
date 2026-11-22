@@ -1,0 +1,1686 @@
+<!-- README.md -->
+
+# Meower2 API
+
+Meower2 is a revival of the Meower chat server. This repository documents its HTTP REST API, the CloudLink realtime websocket protocol, the group-chat roles & permissions system, bot accounts, and the companion uploads service — everything you need to build a client or a bot.
+
+The documentation is generated from the server source code. Every endpoint, field, error type, status code and event name was taken directly from the implementation.
+
+## Quick start
+
+Log in and grab a token (all examples use a placeholder base URL — see [Base URLs](docs/getting-started.md#base-urls)):
+
+```bash
+curl -X POST https://api.example.com/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "me", "password": "hunter2hunter2"}'
+```
+
+```json
+{"error": false, "account": {…}, "token": "<session-token>"}
+```
+
+Read the latest home posts:
+
+```bash
+curl https://api.example.com/home/ -H "Token: <session-token>"
+```
+
+Post to home:
+
+```bash
+curl -X POST https://api.example.com/home/ \
+  -H "Token: <session-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Hello, Meower!"}'
+```
+
+Get realtime updates by connecting to CloudLink and authenticating with the same token — see [docs/cloudlink.md](docs/cloudlink.md).
+
+## Contents
+
+### Guides
+
+- [Getting started](docs/getting-started.md) — base URLs, authentication, request/response conventions, pagination, IDs, timestamps, ratelimits
+- [CloudLink realtime protocol](docs/cloudlink.md) — websocket packets, authentication, every server event
+- [Group chat roles & permissions](docs/chat-permissions.md) — permission tiers, role inheritance, preset roles, chat purposes
+- [Bots](docs/bots.md) — creating bots, using bot tokens, working example bots in JavaScript and Python
+- [Uploads](docs/uploads.md) — uploading and serving icons, attachments, emojis and stickers
+
+### REST API reference
+
+| Area | File |
+|---|---|
+| Authentication & registration | [docs/rest/auth.md](docs/rest/auth.md) |
+| Current user (`/me`) | [docs/rest/me.md](docs/rest/me.md) |
+| Home timeline | [docs/rest/home.md](docs/rest/home.md) |
+| Posts (anywhere) | [docs/rest/posts.md](docs/rest/posts.md) |
+| Users, profiles & relationships | [docs/rest/users.md](docs/rest/users.md) |
+| Chats (groups & DMs) | [docs/rest/chats.md](docs/rest/chats.md) |
+| Chat invites | [docs/rest/invites.md](docs/rest/invites.md) |
+| Inbox | [docs/rest/inbox.md](docs/rest/inbox.md) |
+| Search | [docs/rest/search.md](docs/rest/search.md) |
+| Default emoji packs | [docs/rest/emojis.md](docs/rest/emojis.md) |
+| Bot management | [docs/rest/bots.md](docs/rest/bots.md) |
+| Admin / moderation | [docs/rest/admin.md](docs/rest/admin.md) |
+
+### Machine-readable
+
+- [`llms.txt`](llms.txt) — summary + index for LLM consumers ([llmstxt.org](https://llmstxt.org) format)
+- [`llms-full.txt`](llms-full.txt) — every doc concatenated into one file. Regenerate with:
+
+  ```bash
+  node scripts/build-llms-full.mjs
+  ```
+
+## License
+
+MIT © JoshAtticus 2026 — see [LICENSE](LICENSE).
+
+---
+
+<!-- docs/getting-started.md -->
+
+# Getting started
+
+## Base URLs
+
+Base URLs depend on the instance you are talking to. For a local development
+setup the defaults are:
+
+| Service | Local default |
+|---|---|
+| REST API | `http://127.0.0.1:3001` |
+| CloudLink (websocket) | `ws://127.0.0.1:3000/?v=1` |
+| Uploads | `http://127.0.0.1:3002` |
+
+All examples in this documentation use `https://api.example.com` for the REST
+API and `https://uploads.example.com` for uploads — substitute your instance's
+URLs.
+
+**API prefix:** the v0 blueprint is mounted at both `/` and `/v0`, so
+`POST /auth/login` and `POST /v0/auth/login` are the same endpoint. The docs
+show the unprefixed paths; add `/v0` if your client expects it.
+
+## Authentication
+
+After logging in ([POST /auth/login](rest/auth.md#post-authlogin)) or
+registering you receive a `token`. Send it on every authenticated request with
+the **`Token` header**:
+
+```
+Token: <token>
+```
+
+- Logging in with an existing token as the `password` also works (the client
+  uses this to resume sessions and for CloudLink `authpswd`).
+- Deleting your account, revoking tokens (`DELETE /me/tokens`), or regenerating
+  a bot token invalidates tokens.
+- If the account has TOTP authenticators, login returns `401` with
+  `{"error": true, "type": "mfaRequired", "mfa_methods": ["totp"]}`. Resend the
+  request including `totp_code` (6 digits) or `mfa_recovery_code` (10 hex
+  chars) in the body — or simply append the code to the end of `password` (see
+  [auth.md](rest/auth.md#post-authlogin)).
+- Bots authenticate the same way with their bot token and can never log in
+  with a password (see [bots.md](bots.md)).
+
+## Requests
+
+- JSON bodies, `Content-Type: application/json`.
+- Validation errors return `400 {"error": true, "type": "badRequest"}`.
+- The websocket API uses JSON packets; see [cloudlink.md](cloudlink.md).
+
+## Response conventions
+
+- Successful responses are JSON and usually include `"error": false`.
+- Errors are `{"error": true, "type": "<type>"}` plus an HTTP status code.
+  Some errors carry extra fields (e.g. `mfaRequired` → `mfa_methods`,
+  `chatBanned` → `expires`, `passwordRecentlyChanged` → `changed_at`).
+
+Common error types returned by the framework:
+
+| Status | `type` | Meaning |
+|---|---|---|
+| 400 | `badRequest` | malformed JSON / schema validation failed |
+| 401 | `Unauthorized` | missing or invalid `Token` |
+| 403 | `missingPermissions` | generic forbidden |
+| 404 | `notFound` | resource does not exist (also used to hide private resources) |
+| 405 | `methodNotAllowed` | |
+| 429 | `tooManyRequests` | ratelimit bucket exhausted |
+| 500 | `Internal` | |
+| 503 | `repairModeEnabled` | instance is in repair mode |
+| 403 | `ipBlocked` | requester's IP is netblocked |
+| 403 | `accountBanned` | banned account, or banned from a specific feature (restrictions) |
+
+## Pagination
+
+List endpoints take `?page=<n>` (1-based, 25 items per page) and return:
+
+```json
+{"error": false, "autoget": [ … ], "page#": 1, "pages": 4}
+```
+
+- `autoget` — the items.
+- `page#` — the page returned (note the `#` in the key name).
+- `pages` — total pages.
+
+## IDs & timestamps
+
+- **Posts** are ULIDs: 26-char Crockford base32 strings that sort by creation
+  time (e.g. `01J8Z4K0A0BCDEFGHJKMNPQRST`).
+- **Chats, invites, authenticators, reports, data exports** are UUID4 strings.
+- **Files** (avatars, icons, attachments, emotes) are 24-char
+  `[a-zA-Z0-9]` IDs served by the uploads service.
+- **Usernames** match `[a-zA-Z0-9-_]{1,20}` and are unique case-insensitively.
+- **Timestamps** are Unix seconds (`t.e`, `created`, `last_active`,
+  `updated_at`, …).
+
+## Ratelimits
+
+Endpoints enforce per-bucket fixed-window limits; when a bucket is exhausted
+the endpoint returns `429 {"error": true, "type": "tooManyRequests"}`. Buckets
+are namespaced internally as `rtl:<bucket>:<subject>` — the main ones you'll
+hit:
+
+| Bucket | Limit |
+|---|---|
+| `post:<user>` | 6 posts/edits/deletes per 5s (bypassed by the `POST_RATELIMIT_BYPASS` flag) |
+| `typing:<user>` | 6 per 5s |
+| `update_chat:<user>` | 5 per 5s (chat updates, members, roles, emotes; invites use 10 per 5s) |
+| `create_chat:<user>` | 5 per 30s |
+| `config:<user>` | 10 per 5s |
+| `react:<user>` | 5 per 5s |
+| `relationships:<user>` | 10 per 15s |
+| `report:<user>` | 3 per 5s |
+| `login:i:<ip>` | 50 per 900s; `login:u:<user>` 5 failed attempts per 60s |
+| `register:<ip>:s` | 5 per 900s (plus fail bucket) |
+| `bots:create:<user>` | 5 per 60s |
+
+## Root endpoints
+
+### `GET /`
+
+Instance info:
+
+```json
+{"captcha": {"enabled": false, "sitekey": "…or null"}}
+```
+
+### `GET /status`
+
+Always available, even in repair mode or for blocked IPs:
+
+```json
+{
+  "scratchDeprecated": true,
+  "registrationEnabled": true,
+  "isRepairMode": false,
+  "ipBlocked": false,
+  "ipRegistrationBlocked": false
+}
+```
+
+### `GET /statistics`
+
+```json
+{"error": false, "users": 123, "posts": 4567, "chats": 89}
+```
+
+### `GET /ulist?page=n`
+
+Currently online usernames, 25 per page (same pagination shape, `autoget`
+contains public account objects).
+
+## Account object
+
+Public account objects (from `/users/<name>`, search, ulist, etc.) contain:
+
+| Field | Type | Notes |
+|---|---|---|
+| `_id` | string | username |
+| `uuid` | string | account UUID |
+| `flags` | int | [UserFlags](#userflags) bitfield |
+| `permissions` | int | admin permission bitfield |
+| `created` | int | unix seconds |
+| `pfp_data` | int | built-in avatar id |
+| `avatar` | string | uploaded icon file id or `""` |
+| `avatar_color` | string | 6-char hex |
+| `quote` | string | status/bio (max 360) |
+| `last_seen` | int | unix seconds |
+| `bot` | bool | bot account flag |
+| `bot_owner` | string | only on bot accounts — owner username |
+| `lvl` | int | always `0` (legacy) |
+| `banned` | bool | |
+
+`GET /me` returns the same plus `ban` and all user settings
+(`unread_inbox`, `theme`, `mode`, `layout`, `sfx`, `bgm`, `bgm_song`, `debug`,
+`hide_blocked_users`, `hide_presence`, `profile_theme`, `active_dms`,
+`favorited_chats`).
+
+### UserFlags
+
+| Bit | Name | Meaning |
+|---|---|---|
+| 1 | `SYSTEM` | system account (Server, Notification, Announcement) |
+| 2 | `DELETED` | deleted account |
+| 4 | `PROTECTED` | protected account |
+| 8 | `POST_RATELIMIT_BYPASS` | skips the post ratelimit |
+| 16 | `ULTRA_HD_UPLOADS` | joke flag |
+| 32 | `BOT` | bot account |
+
+### Ban states & restrictions
+
+`account.ban.state` is one of `none`, `temp_restriction`, `perm_restriction`,
+`temp_ban`, `perm_ban`, with `expires` and `reason`. A `perm_ban` or unexpired
+`temp_ban` blocks all authenticated requests (`403 accountBanned`).
+
+Restriction bits on `ban.restrictions` block specific features (also returned
+as `403 accountBanned`):
+
+| Bit | Restriction |
+|---|---|
+| 1 | home posts |
+| 2 | chat posts |
+| 4 | creating chats / adding members |
+| 8 | editing chat details |
+| 16 | editing own profile (profile fields silently dropped) |
+
+---
+
+<!-- docs/rest/auth.md -->
+
+# Authentication — `/auth`
+
+Shared request body (`AuthRequest`) for both endpoints:
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `username` | string | yes | 1–20 chars |
+| `password` | string | yes | 1–255 chars (8–72 enforced on register) |
+| `totp_code` | string | no | exactly 6 digits |
+| `mfa_recovery_code` | string | no | exactly 10 chars |
+| `captcha` | string | no | ≤2000 chars (hCaptcha response) |
+
+## `POST /auth/login`
+
+No auth required. Ratelimits: `login:i:<ip>` 50/900s; `login:u:<user>` 5/60s on
+failure.
+
+```bash
+curl -X POST https://api.example.com/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "me", "password": "hunter2hunter2"}'
+```
+
+Response `200`:
+
+```json
+{"error": false, "account": { …account incl. config… }, "token": "…"}
+```
+
+Credential notes:
+
+- `password` may be an **existing session token** instead of the real password
+  (used for session resume and CloudLink `authpswd`). Bot accounts can **only**
+  authenticate this way — they have no password.
+- If the account has TOTP authenticators and no `totp_code`/
+  `mfa_recovery_code` is given, the server tries appending the code to the end
+  of `password` itself: last 6 chars → TOTP, last 10 chars → recovery code.
+- Using a valid `mfa_recovery_code` **deletes all authenticators**, rotates the
+  recovery code and sends an inbox alert.
+- A password changed within the last 14 days is accepted but rejected with a
+  hint (see errors).
+
+### Errors
+
+| Status | `type` | Condition |
+|---|---|---|
+| 401 | `Unauthorized` | bad credentials |
+| 401 | `accountDeleted` | account is deleted |
+| 401 | `mfaRequired` | 2FA needed; response includes `mfa_methods: ["totp"]` |
+| 401 | `passwordRecentlyChanged` | old password still in the 14-day grace window; response includes `changed_at` |
+| 401 | `Unauthorized` | wrong `totp_code`/`mfa_recovery_code` |
+| 429 | `tooManyRequests` | |
+
+## `POST /auth/register`
+
+No auth required. `username` must match `[a-zA-Z0-9-_]{1,20}` (400 otherwise),
+`password` must be 8–72 chars (400 otherwise). If the instance sets a captcha
+secret, `captcha` is verified against hCaptcha.
+
+```bash
+curl -X POST https://api.example.com/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "newuser", "password": "hunter2hunter2"}'
+```
+
+Response `200`: same shape as login (`{error: false, account, token}`) — you
+are logged in immediately.
+
+### Errors
+
+| Status | `type` | Condition |
+|---|---|---|
+| 403 | `registrationDisabled` | instance closed registration |
+| 403 | `registrationBlocked` | requester's IP is registration-netblocked |
+| 403 | `invalidCaptcha` | |
+| 409 | `usernameExists` | |
+| 400 | `badRequest` | bad username format or password length |
+| 429 | `tooManyRequests` | |
+
+---
+
+<!-- docs/rest/me.md -->
+
+# Current user — `/me`
+
+All endpoints require `Token` auth. Sensitive account-management endpoints
+return `403 {"error": true, "type": "botsCannotDoThis"}` for bot accounts
+(noted per endpoint).
+
+## `GET /me`
+
+Your full account incl. config (see [Account object](../getting-started.md#account-object)).
+
+```bash
+curl https://api.example.com/me -H "Token: $TOKEN"
+```
+
+`200 {"error": false, …account + settings…}`
+
+## `DELETE /me`
+
+Schedules the account for deletion in 7 days, revokes all tokens and
+disconnects CloudLink sessions. Logging back in within 7 days cancels
+(`delete_after` cleared). 🚫 bots.
+
+| Body | Type | Required |
+|---|---|---|
+| `password` | string | yes |
+
+Errors: 401 `invalidCredentials` (wrong password), 403 `botsCannotDoThis`,
+429, 403 `accountBanned`.
+
+## `PATCH /me/config`
+
+Update profile fields and settings. Unknown/absent fields are ignored;
+`null` values are dropped. Ratelimit `config:<user>` 10/5s.
+
+| Body | Type | Constraints |
+|---|---|---|
+| `pfp_data` | int | built-in avatar id |
+| `avatar` | string | uploads file id, `""` to clear |
+| `avatar_color` | string | 6-char hex (no `#`) |
+| `quote` | string | ≤360 |
+| `unread_inbox` | bool | |
+| `theme` | string | ≤256 |
+| `mode` | bool | light/dark |
+| `layout` | string | ≤256 |
+| `sfx` | bool | |
+| `bgm` | bool | |
+| `bgm_song` | int | |
+| `debug` | bool | |
+| `hide_blocked_users` | bool | |
+| `hide_presence` | bool | also toggles ulist visibility |
+| `profile_theme` | bool | |
+| `favorited_chats` | string[] | capped at 50 |
+
+Setting `avatar` claims the file with the uploads service (`unableToClaimAvatar`
+500 on failure) and unclaims the old one. If you're restricted from
+`EDITING_PROFILE`, profile fields are silently dropped.
+
+Events: `update_config` to your sessions; `update_profile` to everyone when
+`pfp_data`/`avatar`/`avatar_color`/`quote` change.
+
+`200 {"error": false}`
+
+## `GET /me/relationships`
+
+```json
+{"error": false, "autoget": [{"username": "…", "state": 1, "updated_at": 0}], "page#": 1, "pages": 1}
+```
+
+Relationship states: `0` none · `1` friend request sent (friends if mutual) ·
+`2` blocking.
+
+## `GET /me/friends`
+
+```json
+{"error": false, "friends": ["mutual"], "incoming": ["they sent a request"], "outgoing": ["I sent a request"]}
+```
+
+## `PATCH /me/password`
+
+🚫 bots.
+
+| Body | Type | Constraints |
+|---|---|---|
+| `old` | string | required |
+| `new` | string | 8–72 chars |
+
+The previous hash is kept for 14 days (login with it returns
+`passwordRecentlyChanged`). Sends an inbox alert.
+
+`200 {"error": false}` · Errors: 401 `invalidCredentials`, 403
+`botsCannotDoThis`, 429.
+
+## `GET /me/authenticators`
+
+```json
+{"error": false, "autoget": [{"_id": "uuid", "type": "totp", "nickname": "…", "registered_at": 0}], "page#": 1, "pages": 1}
+```
+
+## `POST /me/authenticators`
+
+Register a TOTP authenticator. 🚫 bots.
+
+| Body | Type | Required | Constraints |
+|---|---|---|---|
+| `password` | string | yes | |
+| `type` | `"totp"` | yes | only `totp` |
+| `nickname` | string | no | ≤32 |
+| `totp_secret` | string | yes | 32 chars (from `GET /me/authenticators/totp-secret`) |
+| `totp_code` | string | yes | 6 digits, verified against the secret |
+
+`200 {"error": false, "authenticator": {_id,type,nickname,registered_at},
+"mfa_recovery_code": "…"}`. Sends an inbox alert. Errors: 401
+`invalidTOTPCode`, 401 `invalidCredentials`, 403 `botsCannotDoThis`, 400, 429.
+
+## `GET /me/authenticators/totp-secret`
+
+Generates a new secret + provisioning URI + QR SVG. 🚫 bots.
+
+`200 {"error": false, "secret": "BASE32…", "provisioning_uri": "otpauth://…",
+"qr_code_svg": "<svg…>"}`
+
+## `PATCH /me/authenticators/<id>`
+
+🚫 bots. Body `{nickname?: string ≤32}` → `200 {"error": false, …authenticator…}`.
+
+## `DELETE /me/authenticators/<id>`
+
+🚫 bots. Body `{password}` → `200 {"error": false}` + inbox alert.
+Errors: 401 `invalidCredentials`, 404, 403 `botsCannotDoThis`, 429.
+
+## `POST /me/reset-mfa-recovery-code`
+
+🚫 bots. Body `{password}` → `200 {"error": false,
+"mfa_recovery_code": "…"}` + inbox alert. Errors: 401 `invalidCredentials`,
+429.
+
+## `DELETE /me/tokens`
+
+Revokes **all** your tokens and kicks every CloudLink session.
+`200 {"error": false}`.
+
+## `GET /me/reports?page=n`
+
+Reports **you** filed, newest first. `autoget` entries contain the report doc
+with your `reason`/`comment`/`time` merged in and `content` populated (post
+stub `{_id,u,isDeleted}` or account object for user reports).
+
+## `GET /me/export`
+
+Current data-export request, if any exists (pending, or completed <7 days
+old). `200`:
+
+```json
+{"_id": "uuid", "user": "…", "status": "pending|completed|failed", "created_at": 0, "completed_at": 0, "size": 12345, "expires_at": 0}
+```
+
+`size`/`expires_at` only when completed. 404 if none. 🚫 bots.
+
+## `POST /me/export`
+
+Request a new export (built in the background as a ZIP: `account.json`,
+`settings.json`, `posts.json`, `post_revisions.json`, `chats.json`,
+`relationships.json`, `reactions.json`, `reports_filed.json`, …). 429 if a
+current request already exists. `200` returns the export doc. 🚫 bots.
+
+## `GET /me/export/download`
+
+Downloads the latest completed export (`meower-data-<username>.zip`), or 404.
+🚫 bots.
+
+---
+
+<!-- docs/rest/home.md -->
+
+# Home — `/home`
+
+The public timeline. Post objects are described in
+[posts.md](posts.md#post-object).
+
+## `GET /home/?page=n`
+
+Paginated home posts, newest first. **Public** — anonymous callers always get
+page 1.
+
+```bash
+curl https://api.example.com/home/
+```
+
+```json
+{"error": false, "autoget": […posts…], "page#": 1, "pages": 12}
+```
+
+## `POST /home/`
+
+Create a post on home. Auth required; `POST_RATELIMIT_BYPASS` accounts skip the
+`post:<user>` 6/5s bucket.
+
+| Body | Type | Required | Constraints |
+|---|---|---|---|
+| `content` | string | no | ≤4000 |
+| `nonce` | string | no | ≤64, echoed back in the `post` event |
+| `attachments` | string[] | no | file ids, ≤10 |
+| `reply_to` | string[] | no | post ids in `home`, ≤10 |
+| `stickers` | string[] | no | sticker ids, ≤10 (unknown ids dropped) |
+
+Needs `content`, ≥1 attachment, or ≥1 sticker (400 otherwise). Restricted
+accounts (`HOME_POSTS`) get `403 accountBanned`.
+
+`200` — the created post object (with `"error": false`).
+
+Errors: 400 `tooManyAttachments` / `tooManyReplies` / `tooManyStickers`, 500
+`unableToClaimAttachment`, 401, 403, 429.
+
+## `POST /home/typing`
+
+Broadcasts a `typing` event for `home` (`{chat_id: "home", username}`) to all
+clients. Ratelimit `typing:<user>` 6/5s.
+
+`200 {"error": false}`
+
+---
+
+<!-- docs/rest/posts.md -->
+
+# Posts — `/posts`
+
+## Post object
+
+```json
+{
+  "_id": "01J8Z4K0A0BCDEFGHJKMNPQRST",
+  "post_id": "01J8Z4K0A0BCDEFGHJKMNPQRST",
+  "post_origin": "home",
+  "type": 1,
+  "u": "author",
+  "author": {"_id": "author", "uuid": "…", "flags": 0, "pfp_data": 1, "avatar": "", "avatar_color": "000000"},
+  "t": {"e": 1700000000},
+  "p": "post content",
+  "attachments": [{"id": "fileid24…", "mime": "image/webp", "size": 1234, "filename": "x.png", "width": 10, "height": 10, "thumbnail_mime": "image/webp", "thumbnail_size": 500}],
+  "reply_to": [ …embedded parent post objects… ],
+  "reactions": [{"emoji": "👍", "count": 3, "user_reacted": false}],
+  "emojis": [{"_id": "fileid24…", "name": "party", "animated": false}],
+  "stickers": [{"_id": "fileid24…", "name": "meowy", "animated": false}],
+  "pinned": false,
+  "isDeleted": false,
+  "edited_at": 1700000100,
+  "error": false
+}
+```
+
+- `post_origin` — `"home"`, `"inbox"`, `"livechat"`, or a chat id. `type` is
+  `2` for inbox posts, `1` otherwise.
+- `reply_to` in responses is a list of embedded post objects (`null` entries
+  when replies are stripped); when *creating* a post you send post **ids**.
+- `emojis` is populated from `<:FILEID>` tokens found in the content —
+  see [custom emoji](#custom-emoji-in-content).
+- `nonce` is present on the `post` event if you sent one.
+
+### Custom emoji in content
+
+A chat emoji is embedded in content as `<:<file-id>`, e.g.
+`<:aB3fG7hJkLmN0pQrStUvWx>`. Render it from the uploads service:
+`GET {uploads}/emojis/<file-id>`.
+
+## `GET /posts/?id=<post_id>`
+
+Single post. 404 if it doesn't exist, is deleted, or you can't see its origin
+(inbox posts that aren't yours, chats you aren't in).
+
+## `GET /posts/<post_id>/context?limit=n`
+
+The post plus up to `limit` (1–10, default 5) surrounding posts in the same
+origin: `{post, before, after}`.
+
+## `PATCH /posts/?id=<post_id>`
+
+Edit **your own** post (body: `PostBody`, only `content` is applied; must be
+non-empty). Restricted users (`HOME_POSTS`/`CHAT_POSTS` per origin) → 403
+`accountBanned`. Editing the first message of a pending DM request → 403
+`dmRequestPending`. Creates a revision entry, sets `edited_at`, emits
+`update_post`.
+
+## `DELETE /posts/?id=<post_id>`
+
+- Own post in `home` or a DM: always allowed.
+- Group chats: own post needs `delete_own_messages`; someone else's needs
+  `delete_others_messages` **and** `outranks(actor, author)`; `Server` posts
+  need rank ≥ 4 (admin tier). See [chat-permissions](../chat-permissions.md).
+- Group chats with `announce_deletes` get a `Server` message announcing the
+  deletion (`announce_deleter` controls whether the deleter is named).
+
+`200 {"error": false}` · Errors: 403 `missingPermission`,
+`insufficientRank`, 403/404/429.
+
+## `DELETE /posts/<post_id>/attachments/<attachment_id>`
+
+Remove an attachment from your own post; deletes the post entirely if no
+content/attachments remain. 404 if the attachment isn't on the post.
+
+## `POST /posts/<post_id>/report`
+
+Body `{reason?: string ≤2000, comment?: string ≤2000}`. Three reports from
+unique IPs auto-escalate and hide the post. Ratelimit `report:<user>` 3/5s.
+`200 {"error": false}`.
+
+## `POST /posts/<post_id>/pin` · `DELETE /posts/<post_id>/pin`
+
+Pin/unpin a post in its origin chat. Group chats: `pin_messages` /
+`unpin_messages` permission (site moderators with `EDIT_CHATS` bypass). Emits
+`update_post` and a `Server` announcement message. Returns the post.
+Errors: 403 `missingPermission`, 401/404.
+
+## `GET /posts/<chat_id>?page=n`
+
+Posts in a chat you belong to (group or DM), newest first. Auth + membership.
+
+## `POST /posts/<chat_id>`
+
+Post in a chat. Body = `PostBody` (same fields/constraints as
+[home](home.md#post-home)). Chat id `livechat` is special: the post is
+broadcast to everyone but never stored.
+
+- Group chat → needs `send_messages` permission (403 `missingPermission`).
+- Chat-banned → 403 `chatBanned` + `expires`.
+- **DM requests**: between non-friends, whoever posts first becomes the
+  requester — the first message must be **text only** (`dmRequestTextOnly`),
+  then the requester is blocked until the recipient replies or accepts
+  (`dmRequestPending`). The recipient replying accepts the request.
+- Blocked in either direction → 403 (bare `missingPermissions`).
+
+`200` — created post. Emits `post` to chat members (everyone for
+`livechat`), `update_chat` when a DM request changes.
+
+## `GET /posts/<post_id>/reactions/<emoji>?page=n`
+
+Users who reacted with `<emoji>` (unicode emoji or chat-emoji file id).
+`autoget` = account objects.
+
+## `POST /posts/<post_id>/reactions/<emoji>`
+
+React. `<emoji>` must be exactly one unicode emoji or an existing chat-emoji
+file id. Max 50 distinct reactions per post → 403 `tooManyReactions`. Group
+chats need `add_reactions` → 403 `missingPermission`. Ratelimit 5/5s.
+
+`200 {"error": false}` + `post_reaction_add` event
+`{chat_id, post_id, emoji, username}`.
+
+## `DELETE /posts/<post_id>/reactions/<emoji>/<username>`
+
+Remove a reaction; `<username>` may be `@me` for yourself. Removing **another
+user's** reaction is only allowed for the chat owner (and only in chats).
+404 if the reaction doesn't exist. `200 {"error": false}` +
+`post_reaction_remove` event (same shape).
+
+---
+
+<!-- docs/rest/users.md -->
+
+# Users — `/users/<username>`
+
+`username` is case-insensitive; responses always use canonical casing. Deleted
+or unknown users → 404 on every route in this blueprint.
+
+## `GET /users/<username>/`
+
+Public profile — no auth required. See
+[Account object](../getting-started.md#account-object); includes `bot` and
+`bot_owner` for bot accounts.
+
+```bash
+curl https://api.example.com/users/JoshAtticus/
+```
+
+## `GET /users/<username>/posts?page=n`
+
+The user's home posts, newest first. Public.
+
+## `GET /users/<username>/relationship`
+
+Your relationship **to** that user. Auth required; 400 if `<username>` is you.
+
+```json
+{"state": 0, "updated_at": 1700000000}
+```
+
+States: `0` none · `1` friend request (friends if mutual) · `2` blocking.
+
+## `PATCH /users/<username>/relationship`
+
+Change your relationship. Ratelimit `relationships:<user>` 10/15s.
+
+| Body | Type | Required |
+|---|---|---|
+| `state` | `0 \| 1 \| 2` | yes |
+| `notify` | bool | no — only meaningful with `state: 2` |
+
+`200 {state, updated_at}`
+
+Side effects:
+
+- `state: 1` — sends a friend-request inbox message; if the target already sent
+  you a request you become friends (inbox messages to both, pending DM
+  requests between you auto-accepted). Emits `update_friends`.
+- `state: 0` — removes your relationship and clears their pending request to
+  you; unblocking restarts the DM-request expiry countdown and clears a block
+  notice they had set.
+- `state: 2` — removes any friend request/friendship from them. With
+  `notify: true`, the target gets your DM pushed to the front of their active
+  DMs with `block_notice: <you>` so they can see they were blocked.
+- Always emits `update_relationship` `{username, state, updated_at}` to your
+  sessions.
+
+## `POST /users/<username>/report`
+
+Body `{reason?: string ≤2000, comment?: string ≤2000}`. Ratelimit 3/5s.
+`200 {"error": false}`.
+
+## `GET /users/<username>/dm`
+
+Get or create your DM chat with the user. Auth; ratelimit
+`create_chat:<user>` 5/30s; 400 if it's yourself.
+
+- Returns the existing DM if there is one.
+- If you aren't friends and the chat isn't already in your `active_dms`, the
+  DM gets a pending `dm_request` slot (`{from: null, to: null,
+first_message_sent: false}`): whoever posts first becomes the requester — see
+[posts](posts.md#post-postschat_id) and [chats](chats.md#dm-requests).
+- Non-friends creating a DM requires the `NEW_CHATS` restriction to be off
+  (403 `accountBanned`).
+
+`200` — the chat object with `emojis`/`stickers`/`error`.
+
+---
+
+<!-- docs/rest/chats.md -->
+
+# Chats — `/chats`
+
+All endpoints require `Token` auth unless noted. Most chat-management routes
+share the `update_chat:<user>` ratelimit bucket (5 per 5s; 10 per 5s for
+invites). Roles & permissions are covered in
+[chat-permissions.md](../chat-permissions.md).
+
+## Chat object
+
+```json
+{
+  "_id": "uuid",
+  "type": 0,
+  "nickname": "my group",
+  "icon": "",
+  "icon_color": "000000",
+  "owner": "username",
+  "members": ["…"],
+  "created": 0, "last_active": 0,
+  "deleted": false,
+  "announce_deletes": false, "announce_deleter": false,
+  "roles": [ …role objects… ],
+  "member_roles": {"user": ["default", "administrator"]},
+  "invites_enabled": true,
+  "bans": [{"username": "…", "banned_by": "…", "banned_at": 0, "expires": null}],
+  "emojis": [{"_id": "file-id", "name": "…", "animated": false}],
+  "stickers": [{…}],
+  "error": false
+}
+```
+
+- `type`: `0` group chat · `1` DM.
+- `dm_request` (DMs only) appears when a request is pending:
+  `{from, to, first_message_sent}` — `ignored`/`created` are never exposed.
+- `block_notice` (DMs only) is the username of the member who blocked the
+  other with `notify: true`.
+- Role object: `{_id, name, tier, permissions: {perm: bool}, preset: bool,
+colors?: string[]}`.
+
+## `GET /chats/`
+
+All your chats: every group you belong to plus your `active_dms` and
+favorited DMs. `{error, autoget, page#:1, pages:1}`.
+
+## `POST /chats/`
+
+Create a group chat. Ratelimit `create_chat:<user>` 5/30s; 150-group cap →
+403 `tooManyChats`; `NEW_CHATS` restriction → 403 `accountBanned`.
+
+| Body | Type | Required | Constraints |
+|---|---|---|---|
+| `nickname` | string | yes | 1–32 |
+| `icon` | string | no | uploads file id (claimed; 500 `unableToClaimIcon`) |
+| `icon_color` | string | no | 6-char hex |
+| `purpose` | string | no | `friends` `public` `private` `announcements` `emojis` `other` — tweaks preset roles/invites (see [purposes](../chat-permissions.md#chat-purposes)) |
+| `announce_deletes`/`announce_deleter`/`invites_enabled` | bool | no | also accepted |
+
+The creator becomes `owner` with `["default", "administrator"]` roles.
+`200` — chat object + `create_chat` event to you.
+
+## `GET /chats/<chat_id>`
+
+Your member view of one chat (legacy groups are migrated to roles on read).
+404 if not a member.
+
+## `PATCH /chats/<chat_id>`
+
+Update fields — each field you actually change is checked individually (all
+permitted or nothing applies):
+
+| Field | Permission (groups) |
+|---|---|
+| `nickname` | `change_name` |
+| `icon` non-empty | `change_icon` |
+| `icon: ""` | `delete_icon` |
+| `icon_color` | `change_color` |
+| `announce_deletes`, `announce_deleter` | `change_settings` |
+| `invites_enabled` | `toggle_invites` |
+
+DMs: only the owner may patch. `EDITING_CHAT_DETAILS` restriction → 403.
+Emits `update_chat` and `Server` announcement posts. `200` — chat object.
+Errors: 403 `missingPermission`, 500 `unableToClaimIcon`.
+
+## `DELETE /chats/<chat_id>`
+
+- **Group**: leave. Ownership passes to `members[0]` (new owner gains
+  `administrator`); last member out deletes the chat and its posts.
+- **DM**: removes it from your `active_dms` only.
+
+Emits `delete_chat` to you. `200 {"error": false}`.
+
+## `POST /chats/<chat_id>/typing`
+
+Broadcast `typing` `{chat_id, username}` to members (`livechat` works too).
+`200 {"error": false}`.
+
+## `PUT /chats/<chat_id>/members/<username>`
+
+Legacy "add member". Groups need `invite_members`; with `invites_enabled`
+off, only the owner or `toggle_invites` holders may add (403
+`invitesDisabled`). If the target **is a friend** they're added directly;
+otherwise a [chat invite](invites.md) is sent instead (invite object
+returned). New members get the `default` role. Errors: 403 `chatFull` (256
+members), `chatBanned`, 409 `chatMemberAlreadyExists`, 403 if either party
+blocks the other, 404.
+
+## `DELETE /chats/<chat_id>/members/<username>`
+
+Remove a member — `remove_members` + `outranks(actor, target)`. Errors: 403
+`missingPermission` / `insufficientRank`, 404.
+
+## `POST /chats/<chat_id>/members/<username>/transfer`
+
+Owner only. New owner gains `administrator`. `200` — chat.
+
+## `POST /chats/<chat_id>/invites`
+
+Body `{username: 1–20, expires_in?: 60–2592000 (seconds)}` → creates a pending
+invite: `{_id, chat_id, from, to, created, expires, error:false}`. Same
+permission gate as adding members (`invite_members`, `invitesDisabled`).
+409 `inviteAlreadyExists` if one is pending. The invitee gets a `chat_invite`
+event + inbox message; members get `chat_invites_update`.
+
+## `GET /chats/<chat_id>/invites`
+
+Pending invites for the chat (expired ones are swept first).
+`{error, autoget:[{_id,chat_id,from,to,created,expires}], page#:1, pages:1}`.
+
+## `POST /chats/<chat_id>/dm_request/accept` · `POST /chats/<chat_id>/dm_request/ignore`
+
+DM requests (recipient only — the `dm_request.to` user). Accept clears the
+request and posts a `Server` notice; ignore flags it and removes the DM from
+your `active_dms` (nothing is sent to the requester). 403/404 otherwise.
+
+## `PUT /chats/<chat_id>/bans/<username>`
+
+`ban_members` + `outranks(actor, target)` (never the owner). Body
+`{expires_in?: 60–2592000}` (`null` = permanent). Removes the member and any
+invites to/from them. `200 {"error": false, "ban": {username, banned_by,
+banned_at, expires}}`.
+
+## `GET /chats/<chat_id>/bans`
+
+Active bans (unexpired); `ban_members` only.
+
+## `DELETE /chats/<chat_id>/bans/<username>`
+
+Unban; `ban_members` (+ outranks if still a member).
+
+## `GET /chats/<chat_id>/pins?page=n`
+
+Pinned posts in the chat (any member).
+
+## Emotes — `/chats/<chat_id>/emojis|stickers`
+
+- `GET /chats/<chat_id>/<emojis|stickers>` — list `{_id,name,animated}`.
+- `GET /chats/<chat_id>/<emojis|stickers>/<id>` — one emote.
+- `PUT /chats/<chat_id>/<emojis|stickers>/<id>` — create; `<id>` is an uploads
+  file id, body `{name}` (1–32, `[A-Za-z0-9_-]`). `add_emotes` (DMs free).
+  Caps: 250 emojis / 50 stickers → `tooManyEmojis`/`tooManyStickers`; 400
+  `nameRequired`, 409 `nameTaken`, 500 `unableToClaimEmote`. Emits
+  `create_emoji`/`create_sticker`.
+- `PATCH …` — rename; `edit_emotes`. Emits `update_emoji`/`update_sticker`
+  `{_id, chat_id, name}`.
+- `DELETE …` — `delete_emotes`; unclaims the file. Emits
+  `delete_emoji`/`delete_sticker` `{_id, chat_id}`.
+
+## Roles — `/chats/<chat_id>/roles`
+
+Group chats only. Rules in [chat-permissions](../chat-permissions.md#role-api).
+
+- `POST /chats/<chat_id>/roles` — body `{name: 1–32, tier: 0–3,
+permissions: {perm: bool}, colors?: string[0–2] (6-hex)}`. Needs
+`create_roles`; non-owner/admin actors need `tier < rank(actor)`; each
+`true` perm needs `PERMISSIONS[perm] ≤ tier` and grant rights. Errors: 400
+`unknownPermission` / `permissionAboveRoleTier` / `badColors`, 403
+`missingPermission` / `insufficientRank`. `200` — role object.
+- `PATCH /chats/<chat_id>/roles/<role_id>` — `{name?, permissions?: {perm:
+true|false|null}, colors?}` (`null` = reset to inherit; `tier` is immutable →
+  400). `modify_roles` + `can_manage_role`; the `administrator` role only
+  accepts a `colors` change from the owner.
+- `DELETE /chats/<chat_id>/roles/<role_id>` — `delete_roles` +
+  `can_manage_role`; `default`/`administrator` can't be deleted (403).
+- `PUT /chats/<chat_id>/members/<u>/roles/<role_id>` /
+  `DELETE …` — assign/unassign. `assign_roles` + `outranks(actor, target)` +
+  `can_manage_role`; actors can't change their own roles (owner excepted);
+  `administrator` can only be (un)assigned by the owner and never removed
+  from the owner.
+- Every change emits `update_chat` `{_id, roles, member_roles,
+invites_enabled?}`.
+
+---
+
+<!-- docs/rest/invites.md -->
+
+# Chat invites — `/invites`
+
+Auth required. Invites are created via
+[`POST /chats/<id>/invites`](chats.md#post-chatschat_idinvites) (or the legacy
+`PUT …/members/<u>` when the target isn't a friend).
+
+Invite object:
+
+```json
+{"_id": "uuid", "chat_id": "uuid", "chat_nickname": "…", "chat_owner": "…",
+ "from": "inviter", "to": "you", "created": 0, "expires": null}
+```
+
+`expires` is a unix timestamp or `null` (never). Expired invites are deleted
+lazily and treated as 404.
+
+## `GET /invites/`
+
+Your pending invites: `{error, autoget, page#:1, pages:1}`.
+
+## `POST /invites/<invite_id>/accept`
+
+Join the chat — `default` role assigned. Emits `create_chat` to you,
+`update_chat` to members, `chat_invites_update`, and a `Server` join message.
+`200` — the chat object.
+
+Errors: 404 (unknown/expired invite or deleted chat), 403 `chatFull` (256
+members), 403 `chatBanned` + `expires`.
+
+## `DELETE /invites/<invite_id>`
+
+Decline an invite addressed to you, or revoke one. Revoking is allowed for
+the invitee, the inviter, or any member with `remove_members`. Emits
+`chat_invites_update`. `200 {"error": false}` · Errors: 403/404.
+
+---
+
+<!-- docs/rest/inbox.md -->
+
+# Inbox — `/inbox`
+
+Auth required. The inbox is a private post feed: messages addressed to you
+plus `Server` announcements (friend requests, invites, security alerts,
+announce-deletes notices are *not* here — those are chat posts).
+
+## `GET /inbox/?page=n`
+
+Posts where `u` is you or `Server` in origin `inbox`, newest first, 25/page.
+
+```json
+{"error": false, "autoget": […post objects (type 2)…], "page#": 1, "pages": 3}
+```
+
+New inbox posts arrive over CloudLink as `inbox_message` events, and a
+Server-originated inbox post flips your `unread_inbox` flag.
+
+---
+
+<!-- docs/rest/search.md -->
+
+# Search — `/search`
+
+Both endpoints are **public** (no auth needed). Query params:
+
+| Param | Type | Required | Constraints |
+|---|---|---|---|
+| `q` | string | yes | 1–4000 chars (MongoDB text search) |
+| `page` | int | no | ≥1, default 1 |
+
+## `GET /search/home?q=…&page=n`
+
+Full-text search over non-deleted home posts → post page shape.
+
+## `GET /search/users?q=…&page=n`
+
+Full-text search over usernames/quotes → `autoget` of account objects.
+
+> Note: the underlying query requires `pswd` to be a string, so bot accounts
+> (and any other passwordless accounts) never appear in user search.
+
+---
+
+<!-- docs/rest/emojis.md -->
+
+# Default emoji packs — `/emojis`
+
+## `GET /emojis/<lang>`
+
+The server's built-in emoji set, localized. `lang` is one of:
+`ar de en es fa fr id it ja ko pt ru tr zh` (404 otherwise).
+
+```json
+{"error": false, "groups": [
+  {"slug": "people", "name": "People", "icon_emoji": "😀",
+   "emojis": [
+     [["😀", "😀"], [":grinning_face:", ":smiley:"]],
+     …
+   ]}
+]}
+```
+
+Each emoji entry is `[[unicode variants…], [":name:", ":aliases:"]]`.
+
+This is the static picker data — chat-scoped custom emojis/stickers live
+under [`/chats/<id>/emojis` and `/chats/<id>/stickers`](chats.md#emotes---chatschat_idemojisstickers)
+and are embedded in posts as `<:file-id>` (see
+[posts.md](posts.md#custom-emoji-in-content)).
+
+---
+
+<!-- docs/rest/bots.md -->
+
+# Bot management — `/bots`
+
+Bots are real accounts (`flags` has bit `32`/`BOT`, `pswd` is `null`) that
+authenticate everywhere with a single bot **token** — never a password.
+See the [bots guide](../bots.md) for usage.
+
+Management endpoints need a normal (non-bot) `Token`; bots get
+`403 {"error": true, "type": "botsCannotManageBots"}` on every route except
+the public `GET /bots/<id>`. Destructive actions (delete, token regenerate)
+require a `totp_code` when the **owner** has TOTP authenticators:
+`403 mfaRequired` if absent, `401 invalidTOTPCode` if wrong.
+
+## `POST /bots/`
+
+Create a bot. Ratelimit `bots:create:<user>` 5/60s; max 10 bots per owner.
+
+| Body | Type | Required | Constraints |
+|---|---|---|---|
+| `name` | string | yes | must match `[a-zA-Z0-9-_]{1,20}` |
+| `description` | string | no | ≤250, default `""` |
+
+`200`:
+
+```json
+{"error": false, "id": "mybot", "name": "mybot", "description": "…",
+ "owner": "you", "token": "…", "icon": ""}
+```
+
+`token` is returned **only here** (and on regenerate).
+
+Errors: 400 `illegalCharacters`, 409 `usernameExists` (case-insensitive, vs
+all accounts), 403 `botsCannotManageBots` / `tooManyBots`, 429.
+
+## `GET /bots/?page=n`
+
+Your bots, 25/page: `{error, bots: [{id, name, icon}], page, pages}`.
+
+## `GET /bots/<id>`
+
+**Public** — no auth needed:
+
+```json
+{"error": false, "id": "mybot", "name": "mybot", "description": "…", "owner": "you", "icon": ""}
+```
+
+404 `notFound` if it doesn't exist.
+
+## `PATCH /bots/<id>`
+
+Owner only. Body `{name?: string|null, description?: string|null}`.
+`name` is immutable — any value that differs → `400 nameImmutable`.
+`200` — same shape as GET.
+
+## `DELETE /bots/<id>`
+
+Owner only + MFA check (optional JSON body `{totp_code}`). Deletes the bot
+account **and** its posts/relationships (the bot's token stops working).
+`200 {"error": false}`.
+
+## `POST /bots/<id>/token/regenerate`
+
+Owner only + MFA check (optional `{totp_code}`). Replaces the bot's tokens
+with one new token and kicks its CloudLink sessions.
+
+`200 {"error": false, "token": "…"}`
+
+## Notes
+
+- Deleting the owner cascades: all their bots (metadata + accounts) are
+  deleted too.
+- A bot's public profile (`GET /users/<name>`) shows `bot: true` and
+  `bot_owner`.
+
+---
+
+<!-- docs/rest/admin.md -->
+
+# Admin — `/admin`
+
+Requires `Token` auth plus a non-zero `permissions` bitfield on the account
+(401 otherwise). Each route also checks a specific
+[AdminPermissions](#adminpermissions-bitfield) bit — insufficient bits →
+403 `missingPermissions`.
+
+## AdminPermissions bitfield
+
+| Bit | Name |
+|---|---|
+| 1 | `SYSADMIN` |
+| 2 | `VIEW_REPORTS` |
+| 4 | `EDIT_REPORTS` |
+| 8 | `VIEW_NOTES` |
+| 16 | `EDIT_NOTES` |
+| 32 | `VIEW_POSTS` |
+| 64 | `DELETE_POSTS` |
+| 128 | `VIEW_ALTS` |
+| 256 | `SEND_ALERTS` |
+| 512 | `KICK_USERS` |
+| 1024 | `CLEAR_PROFILE_DETAILS` |
+| 2048 | `VIEW_BAN_STATES` |
+| 4096 | `EDIT_BAN_STATES` |
+| 8192 | `DELETE_USERS` |
+| 16384 | `VIEW_IPS` |
+| 32768 | `BLOCK_IPS` |
+| 65536 | `VIEW_CHATS` |
+| 131072 | `EDIT_CHATS` |
+| 262144 | `SEND_ANNOUNCEMENTS` |
+
+## Reports
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /admin/reports?status&type&page` | VIEW_REPORTS | `status`: `pending` `escalated` `no_action_taken` `action_taken`; `type`: `post`/`user` |
+| `GET /admin/reports/<id>` | VIEW_REPORTS | |
+| `PATCH /admin/reports/<id>` | EDIT_REPORTS | `{status: "no_action_taken"\|"action_taken"}` |
+| `POST /admin/reports/<id>/escalate` | EDIT_REPORTS | |
+
+## Admin notes
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /admin/notes/<identifier>` | VIEW_NOTES | `identifier` is a user UUID |
+| `PUT /admin/notes/<identifier>` | EDIT_NOTES | `{notes}` |
+
+## Posts
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /admin/posts/<post_id>` | VIEW_POSTS | incl. revisions & deleted |
+| `DELETE /admin/posts/<post_id>` | DELETE_POSTS | `mod_deleted` |
+| `POST /admin/posts/<post_id>/restore` | DELETE_POSTS | |
+
+## Users
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /admin/users?page` | any user-moderation bit | |
+| `GET /admin/users/<username>` | varies | fields gated per-permission (netlog VIEW_IPS, alts VIEW_ALTS, ban VIEW_BAN_STATES, full profile SYSADMIN) |
+| `PATCH /admin/users/<username>` | SYSADMIN | `{permissions?: int}` |
+| `DELETE /admin/users/<username>?mode=` | DELETE_USERS (SYSADMIN for non-own) | `mode`: `cancel` `schedule` `immediate` `purge` |
+| `POST /admin/users/<username>/ban` | EDIT_BAN_STATES (SYSADMIN for others) | `{state: "none"\|"temp_restriction"\|"perm_restriction"\|"temp_ban"\|"perm_ban", restrictions: int, expires: int, reason: str}` |
+| `GET /admin/users/<username>/posts?origin&page` | VIEW_POSTS / VIEW_CHATS | |
+| `DELETE /admin/users/<username>/posts?origin=` | DELETE_POSTS (SYSADMIN for others) | |
+| `POST /admin/users/<username>/alert` | SEND_ALERTS | `{content: 1–4000}` → inbox message |
+| `POST /admin/users/<username>/kick` | KICK_USERS | disconnect CloudLink sessions |
+| `POST /admin/users/<username>/restore-password` | SYSADMIN | |
+| `DELETE /admin/users/<username>/avatar` | CLEAR_PROFILE_DETAILS | |
+| `DELETE /admin/users/<username>/quote` | CLEAR_PROFILE_DETAILS | |
+
+## Chats
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /admin/chats/<chat_id>` | VIEW_CHATS | |
+| `PATCH /admin/chats/<chat_id>` | EDIT_CHATS | `{nickname?, icon?, icon_color?}` |
+| `DELETE /admin/chats/<chat_id>` | EDIT_CHATS | marks `deleted` |
+| `POST /admin/chats/<chat_id>/restore` | EDIT_CHATS | |
+| `POST /admin/chats/<chat_id>/members/<username>/transfer` | EDIT_CHATS | |
+| `GET /admin/chats/<chat_id>/posts?page` | VIEW_CHATS | |
+
+## Network
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /admin/netinfo/<ip>` | VIEW_IPS | accounts seen from the IP |
+| `GET /admin/netblocks?page` | VIEW_IPS | |
+| `GET /admin/netblocks/<cidr>` | VIEW_IPS | |
+| `PUT /admin/netblocks/<cidr>` | BLOCK_IPS | `{type: 0\|1}` — 0 blocks access, 1 blocks registration |
+| `DELETE /admin/netblocks/<cidr>` | BLOCK_IPS | |
+
+## Announcements & server
+
+| Route | Permission | Notes |
+|---|---|---|
+| `GET /admin/announcements?page` | VIEW_POSTS | |
+| `POST /admin/announcements` | SEND_ANNOUNCEMENTS | `{content}` → inbox post to every user |
+| `POST /admin/server/kick-all` | SYSADMIN | |
+| `POST /admin/server/enable-repair-mode` | SYSADMIN | all routes except `/status` → 503 |
+| `POST /admin/server/registration/disable` | SYSADMIN | |
+| `POST /admin/server/registration/enable` | SYSADMIN | |
+
+---
+
+<!-- docs/cloudlink.md -->
+
+# CloudLink realtime protocol
+
+CloudLink is the websocket API for live events. Local default:
+`ws://127.0.0.1:3000/?v=1`.
+
+## Connecting & protocol version
+
+- `?v=1` selects protocol **v1** (any other/missing value → legacy **v0**).
+- `?token=<token>` auto-authenticates on connect (skips `authpswd`).
+- All packets are JSON objects with at least `{"cmd": str, "val": any}`;
+  `listener` is an optional client-chosen string echoed back on replies.
+
+On connect the server sends a `ulist` packet (online users, `;`-separated,
+trailing `;`). v0 clients additionally get a `statuscode` `TAEnabled`.
+
+## Sending commands
+
+Commands can be sent at the root — `{"cmd": "authpswd", "val": {…}}` — or
+wrapped — `{"cmd": "direct", "val": {"cmd": "authpswd", "val": {…}}}`. A
+direct wrapper whose `val` is a **string** marks the socket "trusted" and
+returns `OK` (legacy handshaking).
+
+| Client command | val | Response |
+|---|---|---|
+| `ping` | any | `statuscode: I:100 \| OK` |
+| `get_ulist` | any | `ulist` packet |
+| `authpswd` | `{username, pswd}` | `auth` packet + `statuscode OK` |
+| `gen_account` | `{username, pswd, captcha?}` | `auth` packet + `statuscode OK` |
+
+`authpswd` proxies `POST /auth/login` — `pswd` may be a password **or an
+existing token** (that's how bots log in). Auth errors are mapped to
+statuscodes (`Unauthorized`→`PasswordInvalid`, `mfaRequired`→`2FARequired`,
+`usernameExists`→`IDExists`, `accountDeleted`→`Deleted`,
+`accountBanned`→`Banned`, `tooManyRequests`→`RateLimit`,
+`invalidCaptcha`→`InvalidCaptcha`, `passwordRecentlyChanged`→`statuscode`
+`PasswordRecentlyChanged` with `changed_at`, `ipBlocked`/`registrationBlocked`→`Blocked`).
+
+### `auth` packet (v1)
+
+```json
+{"cmd": "auth", "val": {
+  "username": "…", "token": "…",
+  "account": { …account + config… },
+  "relationships": […],
+  "chats": […]          // omitted for v0 clients
+}}
+```
+
+## Events (v1)
+
+Every event is `{"cmd": <name>, "val": <payload>}`:
+
+| `cmd` | Payload | Audience |
+|---|---|---|
+| `ulist` | `"user1;user2;"` | everyone |
+| `statuscode` | status string | requester |
+| `auth` / `banned` | see above / `ban` object | requester |
+| `post` | full post object | all (home/livechat) or chat members |
+| `update_post` | full post object | same |
+| `delete_post` | `{chat_id, post_id}` | same |
+| `inbox_message` | post object (`type` 2) | recipient (or all when `u` is `Server`) |
+| `typing` | `{chat_id, username}` | chat members (`home`/`livechat` → all) |
+| `create_chat` | chat object | the user the chat appeared for |
+| `update_chat` | `{_id, …changed fields…}` (e.g. `members`, `owner`, `roles`, `member_roles`, `invites_enabled`, `bans`, `dm_request`, `block_notice`, `nickname`, `icon`…) | chat members |
+| `delete_chat` | `{chat_id}` | the affected user |
+| `update_config` | changed config keys | all your sessions |
+| `update_profile` | `{_id, pfp_data?/avatar?/avatar_color?/quote?}` | everyone |
+| `update_relationship` | `{username, state, updated_at}` | your sessions |
+| `update_friends` | `{}` | the two users |
+| `chat_invite` | invite + `chat_nickname` | invitee |
+| `chat_invites_update` | `{chat_id}` | chat members |
+| `create_emoji` / `create_sticker` | `{_id, name, animated}` | chat members |
+| `update_emoji` / `update_sticker` | `{_id, chat_id, name}` | chat members |
+| `delete_emoji` / `delete_sticker` | `{_id, chat_id}` | chat members |
+| `post_reaction_add` / `post_reaction_remove` | `{chat_id, post_id, emoji, username}` | post audience |
+
+## Events (v0 translation)
+
+For `v`≠1 clients the same events are wrapped differently:
+
+- Root commands `statuscode`, `ulist`, `pmsg`, `pvar` → `{"cmd": <name>,
+"val": …}`.
+- Everything else → `{"cmd": "direct", "val": {"mode": <event>, "payload":
+…}}`, except:
+  - `post` on home → `{"cmd": "direct", "val": {"mode": 1, …post…}}`; other
+    origins → `"state": 2` instead of `mode`.
+  - `typing` home → `{"state": 101, "chatid": "livechat", "u": user}`; other
+    → `{"state": 100, "chatid": <chat>, "u": user}`.
+  - `delete_chat` / `delete_post` → `{"mode": "delete", "id": <id>}`.
+  - `auth` includes no `chats` field.
+
+## Statuscodes
+
+`{"cmd": "statuscode", "val": "<code>"}` (with `listener` when replying to a
+packet that had one):
+
+| Code | Meaning |
+|---|---|
+| `I:100 \| OK` | success |
+| `E:101 \| Syntax` | malformed packet |
+| `E:102 \| Datatype` | wrong `val` type |
+| `E:103 \| ID not found` | |
+| `E:104 \| Internal` | server error in handler |
+| `E:106 \| Too many requests` | REST ratelimit mapped |
+| `I:112 \| Trusted Access enabled` | sent to v0 clients on connect |
+| `E:116 \| Username required` | |
+| `E:118 \| Invalid command` | |
+| `E:119 \| IP Blocked` | |
+| `I:011 \| Invalid Password` | login failed |
+| `E:126 \| Password recently changed` | + `changed_at` |
+| `E:127 \| Invalid captcha` | |
+| `I:015 \| Account exists` | register conflict |
+| `I:016 \| 2FA Required` | mfaRequired |
+| `E:018 \| Account Banned` | |
+| `E:025 \| Deleted` | account deleted |
+
+---
+
+<!-- docs/chat-permissions.md -->
+
+# Group chat roles & permissions
+
+Applies to **group chats only** (`type` 0). DMs have no roles — every member
+can do everything a DM allows. The site-wide `EDIT_CHATS` admin permission
+overrides pin/unpin and the admin endpoints.
+
+## Chat fields
+
+Group chats carry three extra fields:
+
+- `roles` — list of role objects (see below).
+- `member_roles` — `{username: [role_id, …]}`.
+- `invites_enabled` — bool (default `true`).
+
+## Role object
+
+```json
+{"_id": "default", "name": "Default", "tier": 0,
+ "permissions": {"send_messages": true}, "preset": true,
+ "colors": ["ff8800"]}
+```
+
+- `_id` — preset roles have stable ids; custom roles use UUIDs.
+- `tier` — integer 0–4 (see [tiers](#tiers)); immutable after creation.
+- `permissions` — `{perm_key: bool}`. `true` = Allow, `false` = Deny,
+  key absent = Inherit.
+- `colors` — up to 2 six-hex strings (none / solid / gradient); cosmetic.
+- `preset` — built-in role.
+
+## Permissions
+
+| Key | Tier |
+|---|---|
+| `send_messages`, `delete_own_messages`, `invite_members`, `add_emotes`, `edit_emotes`, `delete_emotes`, `change_color`, `change_name`, `change_icon`, `delete_icon`, `pin_messages`, `unpin_messages`, `add_reactions` | 0 |
+| `delete_others_messages`, `remove_members` | 1 |
+| `ban_members`, `modify_roles`, `assign_roles` | 2 |
+| `change_settings`, `create_roles`, `delete_roles`, `toggle_invites` | 3 |
+
+## Tiers
+
+- Role tiers are 0–3 for creatable roles; **4 = Administrator** (all
+  permissions, preset only); **owner rank = 5**.
+- A permission can only be set to `true` on a role whose tier ≥ the
+  permission's required tier.
+- `rank(user)` = owner → 5; else max tier of their roles; no roles → −1.
+- `outranks(a, b)` = `rank(a) > rank(b)` — required for removing, banning,
+  deleting others' messages and assigning roles.
+- Grant rule: a non-owner/non-admin actor can only grant a permission whose
+  tier is **strictly below** their rank.
+
+## Effective permissions (inheritance)
+
+`role_effective(role)`:
+
+1. Tier ≥ 4 → **all** permissions.
+2. Start with every permission any **lower-tier** role explicitly allows.
+3. Add this role's own `true`s.
+4. Remove this role's own `false`s.
+
+Denies do **not** cascade upward: a `false` on a lower-tier role only
+affects that role. `member_permissions(user)` = owner → all; non-member →
+none; else union over their roles.
+
+## Preset roles
+
+| id | Name | Tier | Grants |
+|---|---|---|---|
+| `default` | Default | 0 | send_messages, delete_own_messages, invite_members, add_reactions |
+| `stickerer` | Stickerer | 0 | add_emotes, edit_emotes, delete_emotes |
+| `customiser` | Customiser | 0 | change_color, change_name, change_icon, delete_icon |
+| `pinner` | Pinner | 0 | pin_messages, unpin_messages |
+| `minimod` | Minimod | 1 | delete_others_messages, remove_members |
+| `moderator` | Moderator | 2 | ban_members, modify_roles, assign_roles |
+| `higher_moderator` | Higher Moderator | 3 | change_settings, create_roles, delete_roles, toggle_invites |
+| `administrator` | Administrator | 4 | *(all)* |
+
+New chats: owner gets `["default", "administrator"]`, everyone else
+`["default"]`. Removing `default` is the mute mechanism — without it a
+member can't send.
+
+## Role API rules
+
+Endpoints in [chats.md — roles](rest/chats.md#roles---chatschat_idroles).
+
+- `can_manage_role(actor, role)` — never for `administrator` (except the
+  owner changing its `colors`, and owner-only assignment); owner or rank ≥ 4
+  → always; else `role.tier < rank(actor)`.
+- Self role changes: non-owner actors cannot add/remove **their own** roles.
+- `default` can be removed from a member (mutes them); `default` and
+  `administrator` can't be deleted; `administrator` can't be edited and can
+  never be removed from the owner.
+- After any roles/`member_roles`/`invites_enabled` change the server sends
+  `update_chat {_id, roles, member_roles, invites_enabled?}` to members.
+
+## Chat purposes
+
+`purpose` (creation-only field on `ChatBody`) adjusts the preset `default`
+role and `invites_enabled`:
+
+| Purpose | Effect |
+|---|---|
+| `friends` | default gains all stickerer + customiser + pinner permissions |
+| `public` | presets unchanged |
+| `private` | `invites_enabled: false` |
+| `announcements`, `emojis` | default reduced to `add_reactions` only |
+| `other` / omitted | presets unchanged |
+
+## Legacy migration
+
+Group chats created before roles get migrated lazily (`ensure_roles`) and in
+a startup pass: roles = presets, owner → `default`+`administrator`, other
+members → `default` (plus `pinner` if they had `allow_pinning`),
+`invites_enabled: true`, `allow_pinning` removed.
+
+---
+
+<!-- docs/bots.md -->
+
+# Bots
+
+Bots are real Meower accounts (username, profile, posts, DMs — everything)
+that authenticate with a long-lived **bot token** instead of a password.
+Each account can own up to **10** bots; owners can manage them in
+**Settings → Account → Bots** or via [`/bots`](rest/bots.md).
+
+## Creating a bot
+
+**Settings UI**: Settings → Account → Bots → Manage → create with a name +
+optional description. The token is shown **once** — copy it immediately.
+
+**API**:
+
+```bash
+curl -X POST https://api.example.com/bots/ \
+  -H "Token: $YOUR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "mybot", "description": "hello"}'
+# → {"error": false, "id": "mybot", "name": "mybot", "token": "BOT_TOKEN", …}
+```
+
+Deleting a bot or regenerating its token prompts for a 6-digit TOTP code if
+your account has one (API: `mfaRequired` / `invalidTOTPCode`).
+
+## Using the token
+
+REST — send it as the `Token` header, same as a user token:
+
+```bash
+curl https://api.example.com/me -H "Token: $BOT_TOKEN"
+```
+
+CloudLink — `authpswd` with the token as `pswd`
+(`?token=…` query auth works too):
+
+```json
+{"cmd": "authpswd", "val": {"username": "mybot", "pswd": "BOT_TOKEN"}}
+```
+
+## Restrictions
+
+- Password login → 401 (bots can't log in with a password, and no password
+  exists).
+- `pswd: null`, so bots never appear in user search results.
+- `/bots` management endpoints → 403 `botsCannotManageBots`.
+- Self-service `/me` routes (delete account, password change, authenticators,
+  data export) → 403 `botsCannotDoThis`.
+- Profiles show `"bot": true` and `"bot_owner": "<owner>"`; delete the owner
+  and their bots go with it.
+
+## Example bot (Node.js)
+
+Node 22+ has a global `WebSocket` (on 18–21 `npm i ws` and
+`import WebSocket from "ws"`).
+
+```js
+const API = "http://127.0.0.1:3001";      // REST base
+const WS  = "ws://127.0.0.1:3000/?v=1";   // CloudLink
+const BOT = "mybot";
+const TOKEN = "BOT_TOKEN";
+
+const ws = new WebSocket(WS);
+ws.onopen = () => ws.send(JSON.stringify({
+  cmd: "authpswd", val: { username: BOT, pswd: TOKEN },
+}));
+ws.onmessage = async (ev) => {
+  const { cmd, val } = JSON.parse(ev.data);
+  if (cmd === "post" && val.p === "!ping") {
+    await fetch(`${API}/posts/${val.post_origin}`, {
+      method: "POST",
+      headers: { "Token": TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "pong" }),
+    });
+  }
+};
+```
+
+## Example bot (Python)
+
+`pip install requests websockets`
+
+```python
+import asyncio, json, requests, websockets
+
+API, WS_URL = "http://127.0.0.1:3001", "ws://127.0.0.1:3000/?v=1"
+BOT, TOKEN = "mybot", "BOT_TOKEN"
+
+async def main():
+    async with websockets.connect(WS_URL) as ws:
+        await ws.send(json.dumps({
+            "cmd": "authpswd",
+            "val": {"username": BOT, "pswd": TOKEN}}))
+        async for raw in ws:
+            pkt = json.loads(raw)
+            if pkt["cmd"] == "post" and pkt["val"]["p"] == "!ping":
+                requests.post(
+                    f"{API}/posts/{pkt['val']['post_origin']}",
+                    headers={"Token": TOKEN}, json={"content": "pong"})
+
+asyncio.run(main())
+```
+
+---
+
+<!-- docs/uploads.md -->
+
+# Uploads service
+
+The uploads service is a **separate Go service** (Chi router + MongoDB +
+MinIO object storage + ImageMagick), not part of the Quart REST server.
+Local default: `http://127.0.0.1:3002`.
+
+> Note: this is documented from the uploads service source in the workspace
+> (`uploads/router.go`, `uploads/file.go`, `uploads/user.go`) plus what the
+> client calls.
+
+## Buckets
+
+| Bucket | Purpose | Notes |
+|---|---|---|
+| `icons` | user avatars & chat icons | |
+| `emojis` | custom chat emojis | |
+| `stickers` | chat stickers | |
+| `attachments` | post attachments | images get `width`/`height`/`thumbnail_*` metadata |
+
+## `POST /<bucket>`
+
+Multipart upload (`multipart/form-data` with the file field). Auth:
+`Authorization: <token>` (a `usersv0` token — same as the REST `Token`
+header). The file id returned is then **referenced** in REST calls —
+`attachments`/`stickers` arrays on posts, `icon` on chats, emote ids on
+`/chats/<id>/emojis` — and the REST server "claims" it (500
+`unableToClaim*` errors if the id doesn't exist in uploads).
+
+```bash
+curl -X POST http://127.0.0.1:3002/icons \
+  -H "Authorization: $TOKEN" -F "file=@avatar.png"
+```
+
+## `GET /<bucket>/<file_id>`
+
+Download a file by its id. No auth required.
+
+## `DELETE /<bucket>/<file_id>`
+
+Delete a file you uploaded (`Authorization` header as above).

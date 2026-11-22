@@ -1,0 +1,38 @@
+# Meower2 API
+
+> REST + CloudLink websocket API for Meower2, a revived Meower server
+> (Quart/PyMongo/Redis REST on :3001, CloudLink websocket on :3000, separate
+> Go uploads service on :3002).
+
+Base URLs depend on the instance. Auth is a `Token` header on REST and a
+CloudLink `authpswd` packet (username + password **or token**; bots use
+tokens only). Responses always carry `"error": true|false`; failures add a
+`"type"` string (`missingPermission`, `usernameExists`, `mfaRequired`, …).
+Pagination is `page`/`pages`/`autoget`/`page#`, 25 items per page, and
+ratelimits return 429 with `Retry-After`. Custom chat emojis are written
+inline as `<:<file-id>`; bot accounts have `bot: true` + `bot_owner` on
+their profile. Group-chat roles give per-permission Allow/Deny/Inherit
+across tiers 0–4 (owner rank 5).
+
+## Docs
+
+- [Getting started](docs/getting-started.md): base URLs, auth, errors, pagination, ratelimits, conventions
+- [CloudLink protocol](docs/cloudlink.md): websocket connect/auth/packets/events, v0 translation
+- [Chat permissions](docs/chat-permissions.md): permission tiers, preset roles, inheritance, purposes
+- [Bots guide](docs/bots.md): creating/using bots, restrictions, example bots in JS + Python
+- [Uploads](docs/uploads.md): the separate file-upload service
+
+## REST API
+
+- [Auth](docs/rest/auth.md): register, login, 2FA, sessions
+- [Me](docs/rest/me.md): profile, settings, relationships, DMs, exports, reports
+- [Home](docs/rest/home.md): the public timeline
+- [Posts](docs/rest/posts.md): post object, replies, reactions, pins, reports
+- [Users](docs/rest/users.md): public profiles, relationships, DMs
+- [Chats](docs/rest/chats.md): groups, DMs, members, bans, invites, emotes, roles
+- [Invites](docs/rest/invites.md): chat invite lifecycle
+- [Inbox](docs/rest/inbox.md): inbox feed
+- [Search](docs/rest/search.md): home & user search
+- [Emojis](docs/rest/emojis.md): built-in emoji packs
+- [Bots](docs/rest/bots.md): bot management endpoints
+- [Admin](docs/rest/admin.md): moderation endpoints and permissions
