@@ -132,7 +132,7 @@ role and `invites_enabled`:
 |---|---|
 | `friends` | default gains all stickerer + customiser + pinner permissions |
 | `public` | presets unchanged |
-| `private` | `invites_enabled: false`, `allow_sharing`/`share_context` false, default reduced to send_messages + delete_own_messages + invite_members (no react/share/edit perms) |
+| `private` | `invites_enabled: false`, `allow_sharing`/`share_context` false, Default role without `share_posts` (everything else as normal) |
 | `announcements`, `emojis` | default reduced to `add_reactions` + `react` + `share_posts` + `edit_messages` |
 | `other` / omitted | presets unchanged |
 
