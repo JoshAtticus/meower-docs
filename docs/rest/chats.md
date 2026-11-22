@@ -34,7 +34,9 @@ invites). Roles & permissions are covered in
 - `type`: `0` group chat · `1` DM.
 - `allow_sharing`/`share_context` (groups only; `allow_sharing` defaults to `true`, `share_context` to `false` except in Announcements chats): whether
   non-members may read this chat's posts via `GET /posts?id=` and
-  `/posts/<id>/context` (context additionally requires `share_context`).
+  `/posts/<id>/context`; they additionally need a per-post share token
+  (`?s=`, see [`GET /posts/<id>/share`](posts.md#get-postspost_idshare)),
+  and context requires `share_context`.
 - `dm_request` (DMs only) appears when a request is pending:
   `{from, to, first_message_sent}` — `ignored`/`created` are never exposed.
 - `block_notice` (DMs only) is the username of the member who blocked the

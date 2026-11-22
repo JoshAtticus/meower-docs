@@ -641,14 +641,32 @@ A chat emoji is embedded in content as `<:FILE_ID>`, e.g.
 Single post. 404 if it doesn't exist, is deleted, or you can't see its origin
 (inbox posts that aren't yours, chats you aren't in). For **group chats**,
 non-members (and anonymous callers) can still read the post when the chat's
-`allow_sharing` is on — banned users count as non-members.
+`allow_sharing` is on **and** they pass a valid share token as `?s=<token>`
+(see [`GET /posts/<id>/share`](#get-postspost_idshare)) — banned users count
+as non-members.
 
 ## `GET /posts/<post_id>/context?limit=n`
 
 The post plus up to `limit` (1–10, default 5) surrounding posts in the same
 origin: `{post, before, after}`. For group chats, non-members additionally
-need `share_context` on (implies `allow_sharing`), else 404 even though the
-post itself is readable.
+need `share_context` on (implies `allow_sharing`) **and** a valid `?s=`
+share token for that exact post — you can't crawl a chat by following edge
+posts, since each post needs its own token.
+
+## `GET /posts/<post_id>/share`
+
+Auth required. Returns a signed share token (HMAC of the post id) that
+grants non-members read access to that post via `?s=` on `GET /posts?id=`
+and `GET /posts/<id>/context`. Ratelimit `share:<user>` 30/60s.
+
+- `post_origin: "home"` → `{error: false, token: null}` (public already).
+- Group chat: requester must be a member (non-member → 404) with
+  `share_posts` → else 403 `missingPermission`.
+- DM: members → 403 `sharingUnavailable`; non-members → 404.
+
+```json
+{"error": false, "token": "a1b2c3…(32 hex chars)"}
+```
 
 ## `PATCH /posts/?id=<post_id>`
 
@@ -852,7 +870,9 @@ invites). Roles & permissions are covered in
 - `type`: `0` group chat · `1` DM.
 - `allow_sharing`/`share_context` (groups only; `allow_sharing` defaults to `true`, `share_context` to `false` except in Announcements chats): whether
   non-members may read this chat's posts via `GET /posts?id=` and
-  `/posts/<id>/context` (context additionally requires `share_context`).
+  `/posts/<id>/context`; they additionally need a per-post share token
+  (`?s=`, see [`GET /posts/<id>/share`](posts.md#get-postspost_idshare)),
+  and context requires `share_context`.
 - `dm_request` (DMs only) appears when a request is pending:
   `{from, to, first_message_sent}` — `ignored`/`created` are never exposed.
 - `block_notice` (DMs only) is the username of the member who blocked the
