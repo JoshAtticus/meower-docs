@@ -38,6 +38,7 @@ Update profile fields and settings. Unknown/absent fields are ignored;
 | `avatar` | string | uploads file id, `""` to clear |
 | `avatar_color` | string | 6-char hex (no `#`) |
 | `quote` | string | ≤360 |
+| `display_name` | string \| null | trimmed, ≤32, no control chars/newlines; `""`/`null` clears → `invalidDisplayName` 400 |
 | `unread_inbox` | bool | |
 | `theme` | string | ≤256 |
 | `mode` | bool | light/dark |
@@ -56,7 +57,7 @@ Setting `avatar` claims the file with the uploads service (`unableToClaimAvatar`
 `EDITING_PROFILE`, profile fields are silently dropped.
 
 Events: `update_config` to your sessions; `update_profile` to everyone when
-`pfp_data`/`avatar`/`avatar_color`/`quote` change.
+`pfp_data`/`avatar`/`avatar_color`/`quote`/`display_name` change.
 
 `200 {"error": false}`
 

@@ -163,6 +163,7 @@ Public account objects (from `/users/<name>`, search, ulist, etc.) contain:
 | `avatar` | string | uploaded icon file id or `""` |
 | `avatar_color` | string | 6-char hex |
 | `quote` | string | status/bio (max 360) |
+| `display_name` | string | optional display name (≤32, `""` when unset) |
 | `last_seen` | int | unix seconds |
 | `bot` | bool | bot account flag |
 | `bot_owner` | string | only on bot accounts — owner username |

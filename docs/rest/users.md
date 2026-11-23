@@ -7,7 +7,8 @@ or unknown users → 404 on every route in this blueprint.
 
 Public profile — no auth required. See
 [Account object](../getting-started.md#account-object); includes `bot` and
-`bot_owner` for bot accounts.
+`bot_owner` for bot accounts. `display_name` is the user's optional display
+name (`""` when unset); embedded post `author` objects include it too.
 
 ```bash
 curl https://api.example.com/users/JoshAtticus/
