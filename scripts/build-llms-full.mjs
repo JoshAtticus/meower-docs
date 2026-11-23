@@ -18,6 +18,7 @@ const files = [
   "docs/rest/invites.md",
   "docs/rest/inbox.md",
   "docs/rest/search.md",
+  "docs/rest/explore.md",
   "docs/rest/emojis.md",
   "docs/rest/bots.md",
   "docs/rest/admin.md",

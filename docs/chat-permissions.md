@@ -35,7 +35,7 @@ Group chats carry three extra fields:
 
 | Key | Tier |
 |---|---|
-| `send_messages`, `delete_own_messages`, `invite_members`, `add_emotes`, `edit_emotes`, `delete_emotes`, `change_color`, `change_name`, `change_icon`, `delete_icon`, `pin_messages`, `unpin_messages`, `add_reactions`, `share_posts`, `react`, `edit_messages` | 0 |
+| `send_messages`, `reply_to_posts`, `delete_own_messages`, `invite_members`, `add_emotes`, `edit_emotes`, `delete_emotes`, `change_color`, `change_name`, `change_icon`, `delete_icon`, `pin_messages`, `unpin_messages`, `add_reactions`, `share_posts`, `react`, `edit_messages` | 0 |
 | `delete_others_messages`, `remove_members` | 1 |
 | `ban_members`, `modify_roles`, `assign_roles` | 2 |
 | `change_settings`, `create_roles`, `delete_roles`, `toggle_invites` | 3 |
@@ -96,7 +96,7 @@ none; else union over their roles.
 
 | id | Name | Tier | Grants |
 |---|---|---|---|
-| `default` | Default | 0 | send_messages, delete_own_messages, invite_members, add_reactions, share_posts, react, edit_messages |
+| `default` | Default | 0 | send_messages, reply_to_posts, delete_own_messages, invite_members, add_reactions, share_posts, react, edit_messages |
 | `stickerer` | Stickerer | 0 | add_emotes, edit_emotes, delete_emotes |
 | `customiser` | Customiser | 0 | change_color, change_name, change_icon, delete_icon |
 | `pinner` | Pinner | 0 | pin_messages, unpin_messages |

@@ -14,6 +14,7 @@
   "p": "post content",
   "attachments": [{"id": "fileid24…", "mime": "image/webp", "size": 1234, "filename": "x.png", "width": 10, "height": 10, "thumbnail_mime": "image/webp", "thumbnail_size": 500}],
   "reply_to": [ …embedded parent post objects… ],
+  "reply_count": 4,
   "reactions": [{"emoji": "👍", "count": 3, "user_reacted": false,
                  "users": ["alice", "bob", "carol"]}],
   "emojis": [{"_id": "fileid24…", "name": "party", "animated": false}],
@@ -27,6 +28,8 @@
 
 - `post_origin` — `"home"`, `"inbox"`, `"livechat"`, or a chat id. `type` is
   `2` for inbox posts, `1` otherwise.
+- `reply_count` — number of non-deleted posts replying to this post
+  (maintained as a denormalised counter).
 - `reply_to` in responses is a list of embedded post objects (`null` entries
   when replies are stripped); when *creating* a post you send post **ids**.
 - `emojis` is populated from `<:FILEID>` tokens found in the content —
@@ -134,6 +137,20 @@ broadcast to everyone but never stored.
 
 `reactions[].users` is up to 3 usernames who reacted with that emoji, most
 recent first (the requester is always first if they reacted).
+
+### Likes
+
+A "like" is just the ❤️ reaction (`U+2764 U+FE0F`; bare `U+2764` counts too) —
+there is no separate like API. Add/remove likes through the normal reaction
+endpoints below. The client derives a post's like count from its `reactions`
+array.
+
+## `GET /posts/<post_id>/replies?page=n`
+
+Non-deleted replies to the post (same `post_origin` as the parent), oldest
+first, 25 per page → post page shape. Authorisation is the same as fetching
+the post: home posts are public, chat posts need chat membership — outsiders
+with a signed share token may view the parent but get **404** here.
 
 ## `GET /posts/<post_id>/reactions/<emoji>?page=n`
 

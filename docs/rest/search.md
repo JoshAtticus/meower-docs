@@ -1,6 +1,28 @@
 # Search — `/search`
 
-Both endpoints are **public** (no auth needed). Query params:
+## `GET /search?q=…&page=n&type=all|posts|users|chats`
+
+Unified search — one merged, relevance-ordered list (25/page, `q` 1–200 chars,
+`type` default `all`). Each item:
+
+```json
+{"type": "user|post|chat", "score": 12.3, "user|post|chat": {…payload…}}
+```
+
+`user` = public account object (as `/search/users`), `post` = normal post
+object, `chat` = `{_id, nickname, icon, icon_color, members, mode}`. Response
+also has `counts` (`{users, posts, chats}` candidate counts) and `pages`.
+
+Scoring — users: exact username 100 > username prefix 60 > display_name prefix
+50 > username contains 35 > display_name contains 30. Posts: `$text` score ×10
++ 2·log1p(like_count) + log1p(reply_count) over non-deleted home posts, plus an
+escaped contains-regex fallback over home **and group chats/DMs the requester
+is a member of** (score ≈5 minus small age penalty) — logged-out searches only
+ever see home posts, and nobody sees posts in chats they aren't in. Chats:
+member chats only — nickname prefix 40, contains 25. Merge order: score desc,
+then users > chats > posts, then newest.
+
+Both legacy endpoints below remain available. Query params:
 
 | Param | Type | Required | Constraints |
 |---|---|---|---|

@@ -646,6 +646,7 @@ clients. Ratelimit `typing:<user>` 6/5s.
   "p": "post content",
   "attachments": [{"id": "fileid24…", "mime": "image/webp", "size": 1234, "filename": "x.png", "width": 10, "height": 10, "thumbnail_mime": "image/webp", "thumbnail_size": 500}],
   "reply_to": [ …embedded parent post objects… ],
+  "reply_count": 4,
   "reactions": [{"emoji": "👍", "count": 3, "user_reacted": false,
                  "users": ["alice", "bob", "carol"]}],
   "emojis": [{"_id": "fileid24…", "name": "party", "animated": false}],
@@ -659,6 +660,8 @@ clients. Ratelimit `typing:<user>` 6/5s.
 
 - `post_origin` — `"home"`, `"inbox"`, `"livechat"`, or a chat id. `type` is
   `2` for inbox posts, `1` otherwise.
+- `reply_count` — number of non-deleted posts replying to this post
+  (maintained as a denormalised counter).
 - `reply_to` in responses is a list of embedded post objects (`null` entries
   when replies are stripped); when *creating* a post you send post **ids**.
 - `emojis` is populated from `<:FILEID>` tokens found in the content —
@@ -766,6 +769,20 @@ broadcast to everyone but never stored.
 
 `reactions[].users` is up to 3 usernames who reacted with that emoji, most
 recent first (the requester is always first if they reacted).
+
+### Likes
+
+A "like" is just the ❤️ reaction (`U+2764 U+FE0F`; bare `U+2764` counts too) —
+there is no separate like API. Add/remove likes through the normal reaction
+endpoints below. The client derives a post's like count from its `reactions`
+array.
+
+## `GET /posts/<post_id>/replies?page=n`
+
+Non-deleted replies to the post (same `post_origin` as the parent), oldest
+first, 25 per page → post page shape. Authorisation is the same as fetching
+the post: home posts are public, chat posts need chat membership — outsiders
+with a signed share token may view the parent but get **404** here.
 
 ## `GET /posts/<post_id>/reactions/<emoji>?page=n`
 
@@ -936,6 +953,7 @@ Create a group chat. Ratelimit `create_chat:<user>` 5/30s; 150-group cap →
 | `icon` | string | no | uploads file id (claimed; 500 `unableToClaimIcon`) |
 | `icon_color` | string | no | 6-char hex |
 | `purpose` | string | no | `friends` `public` `private` `announcements` `emojis` `other` — tweaks preset roles/invites (see [purposes](../chat-permissions.md#chat-purposes)) |
+| `mode` | string | no | `chat` or `feed`. Defaults to `feed` when purpose is `announcements`/`emojis`, otherwise `chat`. DMs can never be `feed`. |
 | `announce_deletes`/`announce_deleter`/`invites_enabled` | bool | no | also accepted |
 
 The creator becomes `owner` with `["default", "administrator"]` roles.
@@ -949,7 +967,12 @@ Your member view of one chat (legacy groups are migrated to roles on read).
 ## `PATCH /chats/<chat_id>`
 
 Update fields — each field you actually change is checked individually (all
-permitted or nothing applies):
+permitted or nothing applies). `mode` (`chat`/`feed`) may also be changed here;
+it requires `change_settings` and is never allowed on DMs (400 `invalidMode`).
+**Feed mode:** top-level posts (empty `reply_to`) require `send_messages`;
+replies require `reply_to_posts` **or** `send_messages`. Chat mode is unchanged
+(everything needs `send_messages`). Switching mode deletes nothing.
+The `update_chat` event carries `{_id, mode}`.
 
 | Field | Permission (groups) |
 |---|---|
@@ -1158,7 +1181,29 @@ Server-originated inbox post flips your `unread_inbox` flag.
 
 # Search — `/search`
 
-Both endpoints are **public** (no auth needed). Query params:
+## `GET /search?q=…&page=n&type=all|posts|users|chats`
+
+Unified search — one merged, relevance-ordered list (25/page, `q` 1–200 chars,
+`type` default `all`). Each item:
+
+```json
+{"type": "user|post|chat", "score": 12.3, "user|post|chat": {…payload…}}
+```
+
+`user` = public account object (as `/search/users`), `post` = normal post
+object, `chat` = `{_id, nickname, icon, icon_color, members, mode}`. Response
+also has `counts` (`{users, posts, chats}` candidate counts) and `pages`.
+
+Scoring — users: exact username 100 > username prefix 60 > display_name prefix
+50 > username contains 35 > display_name contains 30. Posts: `$text` score ×10
++ 2·log1p(like_count) + log1p(reply_count) over non-deleted home posts, plus an
+escaped contains-regex fallback over home **and group chats/DMs the requester
+is a member of** (score ≈5 minus small age penalty) — logged-out searches only
+ever see home posts, and nobody sees posts in chats they aren't in. Chats:
+member chats only — nickname prefix 40, contains 25. Merge order: score desc,
+then users > chats > posts, then newest.
+
+Both legacy endpoints below remain available. Query params:
 
 | Param | Type | Required | Constraints |
 |---|---|---|---|
@@ -1175,6 +1220,30 @@ Full-text search over usernames/quotes → `autoget` of account objects.
 
 > Note: the underlying query requires `pswd` to be a string, so bot accounts
 > (and any other passwordless accounts) never appear in user search.
+
+---
+
+<!-- docs/rest/explore.md -->
+
+# Explore — `/explore`
+
+## `GET /explore?range=week|month|year|all&page=n`
+
+Ranked home posts (public, no auth). `range` defaults to `week`
+(week = 7d, month = 30d, year = 365d, `all` = no cutoff); 25 per page.
+
+Ranking score, computed in a Mongo aggregation over the denormalised post
+counters:
+
+```
+score = (3·like_count + 1.5·reaction_count + 4·reply_count + 1)
+        / (age_hours/24 + 2)^0.5
+```
+
+Response: post page shape; every post additionally carries `like_count`,
+`reaction_count`, `reply_count` and `score` (rounded to 2 decimals).
+Results per `(range, page)` are cached in Redis for 60 seconds
+(`explore:*` keys). Posts by accounts the requester has blocked are excluded.
 
 ---
 
@@ -1550,7 +1619,7 @@ Group chats carry three extra fields:
 
 | Key | Tier |
 |---|---|
-| `send_messages`, `delete_own_messages`, `invite_members`, `add_emotes`, `edit_emotes`, `delete_emotes`, `change_color`, `change_name`, `change_icon`, `delete_icon`, `pin_messages`, `unpin_messages`, `add_reactions`, `share_posts`, `react`, `edit_messages` | 0 |
+| `send_messages`, `reply_to_posts`, `delete_own_messages`, `invite_members`, `add_emotes`, `edit_emotes`, `delete_emotes`, `change_color`, `change_name`, `change_icon`, `delete_icon`, `pin_messages`, `unpin_messages`, `add_reactions`, `share_posts`, `react`, `edit_messages` | 0 |
 | `delete_others_messages`, `remove_members` | 1 |
 | `ban_members`, `modify_roles`, `assign_roles` | 2 |
 | `change_settings`, `create_roles`, `delete_roles`, `toggle_invites` | 3 |
@@ -1611,7 +1680,7 @@ none; else union over their roles.
 
 | id | Name | Tier | Grants |
 |---|---|---|---|
-| `default` | Default | 0 | send_messages, delete_own_messages, invite_members, add_reactions, share_posts, react, edit_messages |
+| `default` | Default | 0 | send_messages, reply_to_posts, delete_own_messages, invite_members, add_reactions, share_posts, react, edit_messages |
 | `stickerer` | Stickerer | 0 | add_emotes, edit_emotes, delete_emotes |
 | `customiser` | Customiser | 0 | change_color, change_name, change_icon, delete_icon |
 | `pinner` | Pinner | 0 | pin_messages, unpin_messages |

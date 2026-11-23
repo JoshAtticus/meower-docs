@@ -60,6 +60,7 @@ Create a group chat. Ratelimit `create_chat:<user>` 5/30s; 150-group cap →
 | `icon` | string | no | uploads file id (claimed; 500 `unableToClaimIcon`) |
 | `icon_color` | string | no | 6-char hex |
 | `purpose` | string | no | `friends` `public` `private` `announcements` `emojis` `other` — tweaks preset roles/invites (see [purposes](../chat-permissions.md#chat-purposes)) |
+| `mode` | string | no | `chat` or `feed`. Defaults to `feed` when purpose is `announcements`/`emojis`, otherwise `chat`. DMs can never be `feed`. |
 | `announce_deletes`/`announce_deleter`/`invites_enabled` | bool | no | also accepted |
 
 The creator becomes `owner` with `["default", "administrator"]` roles.
@@ -73,7 +74,12 @@ Your member view of one chat (legacy groups are migrated to roles on read).
 ## `PATCH /chats/<chat_id>`
 
 Update fields — each field you actually change is checked individually (all
-permitted or nothing applies):
+permitted or nothing applies). `mode` (`chat`/`feed`) may also be changed here;
+it requires `change_settings` and is never allowed on DMs (400 `invalidMode`).
+**Feed mode:** top-level posts (empty `reply_to`) require `send_messages`;
+replies require `reply_to_posts` **or** `send_messages`. Chat mode is unchanged
+(everything needs `send_messages`). Switching mode deletes nothing.
+The `update_chat` event carries `{_id, mode}`.
 
 | Field | Permission (groups) |
 |---|---|
