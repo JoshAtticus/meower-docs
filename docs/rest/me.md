@@ -168,3 +168,34 @@ current request already exists. `200` returns the export doc. 🚫 bots.
 
 Downloads the latest completed export (`meower-data-<username>.zip`), or 404.
 🚫 bots.
+
+## Change username
+
+`POST /me/username` (auth required, not available to bots)
+
+Renames the account. Every existing token keeps working; live CloudLink
+connections for the account are closed so they reconnect under the new name.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `username` | string | yes | 1-20 characters: letters, numbers, `-` and `_` |
+| `password` | string | yes | the account's current password |
+| `totp_code` | string | if 2FA is enabled | 6-digit authenticator code |
+
+Rules:
+
+- One change every 72 hours (`429 usernameChangeCooldown`, with `retry_after` in seconds).
+- The old name is reserved for 30 days. During that time only the account that held it can take it back
+  (`409 usernameReserved` for everyone else). Registering it is refused (`409 usernameExists`).
+- `GET /users/<old name>` follows the account for the reservation period: the response is the account's
+  profile with `renamed_from` set to the name that was requested.
+- An inbox message (category `security`) is sent after a change.
+
+Errors: `invalidCredentials` (401), `mfaRequired` (403), `invalidTOTPCode` (401), `illegalCharacters` (400),
+`sameUsername` (400), `usernameExists` (409), `usernameReserved` (409), `usernameChangeCooldown` (429),
+`botsCannotDoThis` (403).
+
+```bash
+curl -X POST "$API/me/username" -H "Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"username": "NewName", "password": "hunter2hunter2"}'
+```
